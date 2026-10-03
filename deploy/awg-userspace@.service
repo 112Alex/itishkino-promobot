@@ -1,0 +1,29 @@
+# Networking prerequisite, not automatically installed/enabled by the bot.
+# Follow docs/vpn.md; config MUST have Table=off and no route/DNS hooks.
+[Unit]
+Description=AmneziaWG userspace interface (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=LOG_LEVEL=error
+ExecStart=/usr/local/bin/amneziawg-go -f %i
+ExecStartPost=/usr/local/libexec/promobot-awg-configure %i
+ExecStopPost=-/usr/sbin/ip link delete dev %i
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=30
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/run/amneziawg
+RuntimeDirectory=amneziawg
+RuntimeDirectoryMode=0700
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+DeviceAllow=/dev/net/tun rw
+StandardOutput=null
+StandardError=null
+
+[Install]
+WantedBy=multi-user.target

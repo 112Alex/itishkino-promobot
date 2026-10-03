@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily backup for promobot (%i)
+
+[Timer]
+OnCalendar=*-*-* 02:30:00 Europe/Moscow
+RandomizedDelaySec=300
+Persistent=true
+Unit=promobot-backup@%i.service
+
+[Install]
+WantedBy=timers.target

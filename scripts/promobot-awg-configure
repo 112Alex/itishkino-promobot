@@ -1,0 +1,31 @@
+#!/bin/bash
+# Root-owned systemd helper; intentionally does NOT install host routes or change DNS.
+set -eu
+umask 077
+interface=${1:?interface required}
+[[ $interface =~ ^[a-zA-Z0-9_-]{1,15}$ ]] || exit 2
+conf=/etc/amnezia/amneziawg/${interface}.conf
+# Never print parser errors or stripped config to the journal; they may contain keys.
+exec 2>/dev/null
+for attempt in {1..50}; do
+    [[ -S /run/amneziawg/${interface}.sock ]] && break
+    sleep 0.1
+done
+/usr/local/bin/awg setconf "$interface" <(/usr/local/bin/awg-quick strip "$conf")
+# Address/MTU come from the protected native file. Python only returns vetted values.
+mapfile -t addresses < <(/usr/bin/python3 - "$conf" <<'PY'
+import configparser, ipaddress, sys
+c=configparser.ConfigParser(interpolation=None, strict=True)
+c.read(sys.argv[1])
+if c['Interface'].get('Table','').lower() != 'off':
+    raise SystemExit(2)
+for key in ('PreUp','PostUp','PreDown','PostDown','SaveConfig'):
+    if c['Interface'].get(key):
+        raise SystemExit(2)
+for value in c['Interface']['Address'].split(','):
+    print(str(ipaddress.ip_interface(value.strip())))
+PY
+)
+[[ ${#addresses[@]} -gt 0 ]] || exit 2
+for addr in "${addresses[@]}"; do /usr/sbin/ip address replace "$addr" dev "$interface"; done
+/usr/sbin/ip link set dev "$interface" up

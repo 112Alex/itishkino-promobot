@@ -1,0 +1,26 @@
+{
+  "branch": {
+    "key": "preobrazhenka",
+    "name": "Айтишкино — Преображенка",
+    "crm_id": null,
+    "pipeline_id": null,
+    "pipeline_name": "Основная",
+    "status_id": null,
+    "status_name": "Не разобрано",
+    "source_id": null,
+    "source_name": null,
+    "request_field": null,
+    "verified_contract": false,
+    "archive_visibility_verified": false,
+    "contacts_verified": false,
+    "unassigned_verified": false,
+    "communication_verified": false,
+    "technical_user_id": null
+  },
+  "promoters": {},
+  "age_min": 3,
+  "age_max": 18,
+  "name_limit": 50,
+  "comment_limit": 1500,
+  "administrators": {}
+}

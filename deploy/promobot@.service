@@ -1,0 +1,40 @@
+[Unit]
+Description=Айтишкино Telegram intake (%i)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=promobot
+Group=promobot
+WorkingDirectory=/opt/promobot
+EnvironmentFile=/etc/promobot/%i.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/promobot/.venv/bin/promobot --env /etc/promobot/%i.env run
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=45
+KillSignal=SIGTERM
+UMask=0077
+StateDirectory=promobot
+StateDirectoryMode=0700
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+# Shared /tmp locks prevent test and prod from polling the same bot token.
+PrivateTmp=false
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/promobot /tmp
+
+[Install]
+WantedBy=multi-user.target

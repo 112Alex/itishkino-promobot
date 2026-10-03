@@ -1,0 +1,27 @@
+name: Tests and Docker
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ['3.11', '3.12']
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -r requirements.lock
+      - run: python -m pip install --no-deps .
+      - run: python -m pytest -q
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: docker build -t itishkino-promobot:ci .
+      - run: docker run --rm --entrypoint python itishkino-promobot:ci -m pip check
+      - run: docker run --rm --entrypoint promobot itishkino-promobot:ci --help

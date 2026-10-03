@@ -1,0 +1,17 @@
+[Unit]
+Description=SQLite backup for promobot (%i)
+
+[Service]
+Type=oneshot
+User=promobot
+Group=promobot
+WorkingDirectory=/opt/promobot
+EnvironmentFile=/etc/promobot/%i.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/promobot/.venv/bin/promobot --env /etc/promobot/%i.env backup
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateDevices=true
+ReadWritePaths=/var/lib/promobot

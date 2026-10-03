@@ -1,0 +1,27 @@
+{
+  "branch": {
+    "key": "preobrazhenka",
+    "name": "Айтишкино — Преображенка",
+    "crm_id": 4,
+    "pipeline_id": 1,
+    "pipeline_name": "Основная",
+    "initial_unassigned": true,
+    "status_id": null,
+    "status_name": "Не разобрано",
+    "source_id": 6,
+    "source_name": "Промо со Стивом",
+    "request_field": "custom_promo_request_id",
+    "technical_user_id": 18,
+    "verified_contract": true,
+    "archive_visibility_verified": true,
+    "contacts_verified": true,
+    "unassigned_verified": true,
+    "communication_verified": true
+  },
+  "promoters": {},
+  "administrators": {},
+  "age_min": 3,
+  "age_max": 18,
+  "name_limit": 50,
+  "comment_limit": 1500
+}

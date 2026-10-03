@@ -1,0 +1,10 @@
+**
+!Dockerfile
+!pyproject.toml
+!README.md
+!requirements.runtime.lock
+!src/
+!src/promobot/
+!src/promobot/*.py
+!src/promobot/migrations/
+!src/promobot/migrations/*.sql
