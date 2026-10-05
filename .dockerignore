@@ -12,5 +12,7 @@
 !deploy/vpn/
 !deploy/vpn/Dockerfile
 !deploy/vpn/entrypoint.py
+!deploy/vpn/awg-tools-header-flags.patch
 !scripts/
 !scripts/check-awg-config.py
+!scripts/fix-awg-headers.py

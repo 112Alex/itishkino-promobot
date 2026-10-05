@@ -12,13 +12,13 @@
 sh scripts/build-vpn-image.sh
 ```
 
-Получаются `outputs/itishkino-promobot-vpn-awg2-1-linux-amd64.tar.gz` и `outputs/VPN-SHA256SUMS`. Сборка требует интернета. Go-клиент v0.2.19 и tools v1.0.20260618 собраны из официальных репозиториев с проверкой полного SHA; базовые образы зафиксированы digest. Финальный образ не содержит компиляторов или пользовательской конфигурации.
+Получаются `outputs/itishkino-promobot-vpn-awg2-2-linux-amd64.tar.gz` и `outputs/VPN-SHA256SUMS`. Сборка требует интернета. Go-клиент v0.2.19 и tools v1.0.20260618 собраны из официальных репозиториев с проверкой полного SHA; базовые образы зафиксированы digest. Для закреплённого tools применён локальный двухстрочный patch `deploy/vpn/awg-tools-header-flags.patch`: исправляет условия установки флагов H1/H2. При запуске клиент также сверяет фактически применённые H1/H2 через UAPI. Финальный образ не содержит компиляторов или пользовательской конфигурации.
 
 Передайте оба файла на сервер тем же `scp`, которым переносили образ бота. В каталоге передачи:
 
 ```sh
 sha256sum -c VPN-SHA256SUMS
-docker load -i itishkino-promobot-vpn-awg2-1-linux-amd64.tar.gz
+docker load -i itishkino-promobot-vpn-awg2-2-linux-amd64.tar.gz
 ```
 
 ## Настройки и запуск только VPN
@@ -67,6 +67,17 @@ docker compose -f compose.yaml -f compose.vpn.yaml logs --tail=30 bot
 
 Парсер тестируется на сохранении AWG-параметров, IPv4/IPv6 DNS и отказе от неподдерживаемых сетевых конфигураций. Перед эксплуатацией конкретной конфигурации нужны Docker smoke test, network-check и проверка отсутствия прямого выхода при отказе туннеля. Локальная проверка не подтверждает доступность VPN endpoint из сети школы.
 
-Локальная проверка 2026-10-06: образ linux/amd64 собран, TUN и AWG setconf работают, SOCKS negotiation проходит, расход памяти около 25 МБ. При выключенном AWG-интерфейсе и восстановленном физическом default route прямой TCP/443 блокируется. CRM network-check проходит; VPN отправляет пакеты, но ответов и свежего handshake в локальной сети пока нет, поэтому Telegram через этот VPN ещё не подтверждён. На сервере требуется повторить проверку. Native-шаблон Amnezia содержит DNS placeholders: до передачи они заменяются адресами из того же import; пустые неактивные I-параметры пропускаются только при передаче в awg setconf.
+Локальная проверка 2026-10-06: образ linux/amd64 собран, TUN и AWG setconf работают, SOCKS negotiation проходит, расход памяти около 25 МБ. При выключенном AWG-интерфейсе и восстановленном физическом default route прямой TCP/443 блокируется. В первом образе tools не передавал H1/H2: обнаружено сравнением native-конфигурации и UAPI. После восстановления этих параметров появился свежий handshake, Telegram HTTPS ответил 302, bot network-check показал CRM/Telegram ok и отсутствие webhook. Образ awg2-2 закрепляет исправление parser и проверяет H1/H2 при каждом старте. На сервере требуется повторить network-check после замены образа. Native-шаблон Amnezia содержит DNS placeholders: до передачи они заменяются адресами из того же import; пустые неактивные I-параметры пропускаются только при передаче в awg setconf.
 
 [Официальные исходники AWG Go](https://github.com/amnezia-vpn/amneziawg-go/tree/v0.2.19), [tools](https://github.com/amnezia-vpn/amneziawg-tools/tree/v1.0.20260618), [настройка Dante](https://www.inet.no/dante/doc/1.4.x/config/server.html).
+
+Для регрессионной проверки реального tools/Go parser без сети и пользовательских ключей:
+
+```sh
+docker run --rm -i --network none --read-only --cap-drop ALL \
+  --cap-add NET_ADMIN --cap-add NET_RAW --device /dev/net/tun \
+  --tmpfs /run:rw,mode=755 --entrypoint python3 \
+  itishkino-promobot-vpn:awg2-2-amd64 - < tests/smoke_awg_headers.py
+```
+
+Образ awg2-1 замените на awg2-2. После `docker load` используйте `up -d --no-build --force-recreate vpn`. Native-конфигурация и база бота при этом сохраняются.

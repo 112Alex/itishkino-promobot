@@ -8,7 +8,7 @@ services:
       vpn:
         condition: service_healthy
   vpn:
-    image: itishkino-promobot-vpn:awg2-1-amd64
+    image: itishkino-promobot-vpn:awg2-2-amd64
     platform: linux/amd64
     restart: unless-stopped
     init: true

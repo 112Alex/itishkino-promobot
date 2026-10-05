@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
-image=itishkino-promobot-vpn:awg2-1-amd64
-archive=itishkino-promobot-vpn-awg2-1-linux-amd64.tar.gz
+image=itishkino-promobot-vpn:awg2-2-amd64
+archive=itishkino-promobot-vpn-awg2-2-linux-amd64.tar.gz
 mkdir -p outputs
 docker build --platform linux/amd64 -f deploy/vpn/Dockerfile -t "$image" .
 docker save -o "outputs/$archive.tar" "$image"

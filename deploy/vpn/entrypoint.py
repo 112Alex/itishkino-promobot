@@ -116,6 +116,12 @@ def main():
             c.write(f)
         phase = "tunnel parameters"
         run("awg", "setconf", "awg0", str(stripped))
+        phase = "header verification"
+        spec = importlib.util.spec_from_file_location("headers", "/app/fix-awg-headers.py")
+        headers = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(headers)
+        headers.fix()
+        print("AWG native H1/H2 verified", flush=True)
         stripped.unlink()
         isolated.unlink()
         phase = "tunnel addresses"
