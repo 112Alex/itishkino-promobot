@@ -96,6 +96,7 @@ Mock не обращается к рабочей CRM. Без Telegram-токен
 
 - [Docker: перенос, запуск и резервные копии](docs/docker.md)
 - [Перенос через Tailscale без установки клиента в основную ОС](docs/tailscale-transfer.md)
+- [Telegram через AmneziaWG 2.0 в Docker](docs/docker-vpn.md)
 - [Памятка пользователя бота](docs/promoter.md)
 - [Работа владельца и установка без Docker](docs/owner.md)
 - [Контракт AlfaCRM и приёмка](docs/integration.md)

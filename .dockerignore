@@ -8,3 +8,9 @@
 !src/promobot/*.py
 !src/promobot/migrations/
 !src/promobot/migrations/*.sql
+!deploy/
+!deploy/vpn/
+!deploy/vpn/Dockerfile
+!deploy/vpn/entrypoint.py
+!scripts/
+!scripts/check-awg-config.py
