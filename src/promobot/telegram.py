@@ -12,7 +12,7 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.exceptions import TelegramAPIError, TelegramForbiddenError, TelegramBadRequest, TelegramRetryAfter
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from .domain import now
-from .storage import enqueue, one
+from .storage import dumps, enqueue, one
 
 log = logging.getLogger("promobot")
 
@@ -53,35 +53,44 @@ class Outbox:
         self.lock = asyncio.Lock()
 
     async def tick(self):
+        # Claim atomically, then release the lock before network I/O. Other
+        # workers can serve different chats while this chat awaits Telegram.
         async with self.lock:
             async with self.db.tx() as c:
-                r = await one(c, "SELECT * FROM outbox WHERE state='pending' AND next_at<=? ORDER BY id LIMIT 1", (time.time(),))
+                r = await one(c, """SELECT * FROM outbox WHERE state='pending' AND next_at<=?
+                    AND NOT EXISTS (SELECT 1 FROM outbox p WHERE p.chat_id=outbox.chat_id
+                        AND p.id<outbox.id AND p.state IN ('pending','processing'))
+                    ORDER BY id LIMIT 1""", (time.time(),))
                 if not r:
                     return False
-                # Preserve responses in order for each chat, even after delayed retries.
-                earlier = await one(c, "SELECT id FROM outbox WHERE chat_id=? AND id<? AND state IN ('pending','processing') LIMIT 1", (r["chat_id"], r["id"]))
-                if earlier:
-                    r = await one(c, "SELECT * FROM outbox WHERE state='pending' AND next_at<=? AND NOT EXISTS (SELECT 1 FROM outbox p WHERE p.chat_id=outbox.chat_id AND p.id<outbox.id AND p.state IN ('pending','processing')) ORDER BY id LIMIT 1", (time.time(),))
-                    if not r:
-                        return False
                 await c.execute("UPDATE outbox SET state='processing',attempts=attempts+1 WHERE id=?", (r["id"],))
+        started = time.perf_counter()
+        outcome = 'operation_failed'
+        queue_ms = int((datetime.now(timezone.utc) - datetime.fromisoformat(r['created_at'])).total_seconds() * 1000)
+        try:
             p = json.loads(r["payload"])
-            try:
-                if r["kind"] == "ack":
-                    await self.bot.answer_callback_query(p["text"])
-                    mid = None
-                else:
-                    result = await self.bot.send_message(r["chat_id"], p["text"], reply_markup=keyboard(p["keyboard"]), parse_mode=None)
-                    mid = result.message_id
-                await self.db.execute("UPDATE outbox SET state='done',message_id=?,error=NULL,payload=NULL WHERE id=?", (mid, r["id"]))
-            except (TelegramForbiddenError, TelegramBadRequest):
-                await self.db.execute("UPDATE outbox SET state='held',error='telegram_rejected' WHERE id=?", (r["id"],))
-                await self.alert(r, 'telegram_rejected')
-            except (TelegramAPIError, OSError) as exc:
-                delay = exc.retry_after if isinstance(exc, TelegramRetryAfter) else min(self.s.retry_cap, self.s.retry_base * 2 ** min(r["attempts"] + 1, 16))
-                await self.db.execute("UPDATE outbox SET state='pending',next_at=?,error='telegram_unavailable' WHERE id=?", (time.time()+delay, r["id"]))
-                await self.alert(r, 'telegram_unavailable')
-            return True
+            if r["kind"] == "ack":
+                await self.bot.answer_callback_query(p["text"])
+                mid = None
+            else:
+                result = await self.bot.send_message(r["chat_id"], p["text"], reply_markup=keyboard(p["keyboard"]), parse_mode=None)
+                mid = result.message_id
+            await self.db.execute("UPDATE outbox SET state='done',message_id=?,error=NULL,payload=NULL WHERE id=?", (mid, r["id"]))
+            outcome = 'done'
+        except (TelegramForbiddenError, TelegramBadRequest):
+            await self.db.execute("UPDATE outbox SET state='held',error='telegram_rejected' WHERE id=?", (r["id"],))
+            await self.alert(r, 'telegram_rejected')
+            outcome = 'held'
+        except (TelegramAPIError, OSError) as exc:
+            delay = exc.retry_after if isinstance(exc, TelegramRetryAfter) else min(self.s.retry_cap, self.s.retry_base * 2 ** min(r["attempts"] + 1, 16))
+            await self.db.execute("UPDATE outbox SET state='pending',next_at=?,error='telegram_unavailable' WHERE id=?", (time.time()+delay, r["id"]))
+            await self.alert(r, 'telegram_unavailable')
+            outcome = 'retry'
+        finally:
+            log.info(dumps({'operation': 'telegram_outbox', 'outbox_id': r['id'], 'kind': r['kind'],
+                            'status': outcome, 'queue_ms': queue_ms,
+                            'duration_ms': int((time.perf_counter()-started)*1000)}))
+        return True
 
 
     async def alert(self, message, code):
@@ -97,6 +106,7 @@ class Runtime:
     def __init__(self, db, settings, bot, dialog, worker):
         self.db, self.s, self.bot, self.dialog, self.worker = db, settings, bot, dialog, worker
         self.outbox = Outbox(db, bot, settings)
+        self.inbox_ready, self.outbox_ready, self.jobs_ready = (asyncio.Event() for _ in range(3))
 
     async def polling(self):
         delay = 1
@@ -105,6 +115,8 @@ class Runtime:
                 batch = await self.bot.get_updates(offset=await self.db.offset(), timeout=30,
                                                    allowed_updates=["message", "callback_query"], request_timeout=45)
                 await self.db.ingest(self.dialog.bot_id, [u.model_dump(mode="json", by_alias=True, exclude_none=True) for u in batch])
+                if batch:
+                    self.inbox_ready.set()
                 await self.network_state("up")
                 delay = 1
             except (TelegramAPIError, OSError):
@@ -125,11 +137,14 @@ class Runtime:
                     await enqueue(c, f'alert:network:{state}:{stamp}:{admin}', admin,
                                   "Связь с Telegram восстановлена" if state == "up" else "Связь с Telegram была недоступна. Сохранённая очередь не потеряна.")
 
+        self.outbox_ready.set()
+
     async def inbox(self):
         while True:
+            self.inbox_ready.clear()
             events = await self.db.query("SELECT min(update_id) AS update_id,user_id FROM inbox WHERE state='pending' AND bot_id=? GROUP BY user_id ORDER BY update_id LIMIT 3", (self.dialog.bot_id,))
             if not events:
-                await asyncio.sleep(.5)
+                await self.wait_ready(self.inbox_ready, 1)
                 continue
             async def apply(e):
                 try:
@@ -144,12 +159,24 @@ class Runtime:
                                           "Входящее событие требует проверки. Код: invalid_event. Анкета сохранена.")
             # Each user contributes only their oldest event; the next batch follows commit.
             await asyncio.gather(*(apply(e) for e in events))
+            self.outbox_ready.set()
+            self.jobs_ready.set()
 
-    async def loop(self, tick, pause):
+    @staticmethod
+    async def wait_ready(event, timeout):
+        try:
+            await asyncio.wait_for(event.wait(), timeout)
+        except asyncio.TimeoutError:
+            pass
+
+    async def loop(self, tick, pause, ready):
         while True:
+            ready.clear()
             worked = await tick()
-            if not worked:
-                await asyncio.sleep(pause)
+            if worked:
+                self.outbox_ready.set()
+            else:
+                await self.wait_ready(ready, pause)
 
     async def cleanup(self):
         while True:
@@ -164,8 +191,9 @@ class Runtime:
             async with asyncio.TaskGroup() as tasks:
                 tasks.create_task(self.polling())
                 tasks.create_task(self.inbox())
-                tasks.create_task(self.loop(self.worker.tick, .5))
-                tasks.create_task(self.loop(self.outbox.tick, .5))
+                tasks.create_task(self.loop(self.worker.tick, 1, self.jobs_ready))
+                for _ in range(3):
+                    tasks.create_task(self.loop(self.outbox.tick, 1, self.outbox_ready))
                 tasks.create_task(self.cleanup())
         except Exception:
             # Deliver after restart, if SQLite remains writable. Bound crash-loop alerts.

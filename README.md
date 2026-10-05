@@ -58,7 +58,7 @@ docker compose logs --tail=50 bot
 
 Команда `network-check` проверяет CRM login, Telegram getMe и наличие webhook, без отправки сообщений, polling и создания лидов. `doctor` дополнительно показывает состояние очередей. После запуска владелец, Олег и Амир должны открыть бота и нажать `/start`.
 
-Для Intel Mac Mini 2011 подготовлен образ `itishkino-promobot:0.2.0-amd64` под Linux/DietPi, без эмуляции. Compose ограничивает бот 256 МБ RAM и 0,75 CPU; SQLite на SSD и один процесс обслуживают один филиал. Готовый архив загружается через `docker load -i itishkino-promobot-0.2.0-linux-amd64.tar.gz`. После загрузки сборку пропустите, запускайте `docker compose up -d --no-build`. Архив образа хранится отдельно от Git, его повторная сборка и экспорт: `sh scripts/build-image.sh`. Подробнее: [инструкция переноса](docs/docker.md).
+Для Intel Mac Mini 2011 подготовлен образ `itishkino-promobot:0.2.1-amd64` под Linux/DietPi, без эмуляции. Compose ограничивает бот 256 МБ RAM и 0,75 CPU; SQLite на SSD и один процесс обслуживают один филиал. Готовый архив загружается через `docker load -i itishkino-promobot-0.2.1-linux-amd64.tar.gz`. После загрузки сборку пропустите, запускайте `docker compose up -d --no-build`. Архив образа хранится отдельно от Git, его повторная сборка и экспорт: `sh scripts/build-image.sh`. Подробнее: [инструкция переноса](docs/docker.md).
 
 Для переноса настроек текущего рабочего аккаунта используйте свои защищённые env/JSON, а не заново заполненные примеры. Контейнерные пути из `.env.example` оставьте как указано. **Перед запуском на сервере остановите локальную копию этого Telegram-бота.** Порядок переноса данных, резервных копий и VPN: [Docker на DietPi](docs/docker.md).
 
@@ -101,6 +101,7 @@ Mock не обращается к рабочей CRM. Без Telegram-токен
 - [Результат реальной проверки CRM](docs/crm-acceptance.md)
 - [AWG 2.0 и маршрутизация](docs/vpn.md)
 - [Тестирование](docs/testing.md)
+- [Замеры производительности](docs/performance.md)
 
 ## Как устроен проект
 

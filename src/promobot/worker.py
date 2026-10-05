@@ -112,7 +112,9 @@ class Worker:
             raise CRMError("configuration_changed")
         payload = crm_payload(r, self.s)
         await self.change(r["id"], "checking" if phase == "check" else "verifying")
-        own = await self.crm.own(r["id"])
+        # One fresh, complete scan per attempt, reused only within this check.
+        records = await self.crm.customers() if phase == "check" else None
+        own = await self.crm.own(r["id"], records)
         if own:
             r["crm_id"] = own["id"]
             await self.change(r["id"], "crm_created", phase if phase in {"reconcile_comment", "verify"} else "comment_check", crm_id=own["id"])
@@ -123,7 +125,7 @@ class Worker:
             raise CRMError("write_outcome_unknown", True)
         else:
             await self.claim_contacts(r)
-            duplicates = await self.crm.duplicates(r["data"])
+            duplicates = await self.crm.duplicates(r["data"], records)
             if duplicates:
                 await self.change(r["id"], "duplicate_review", matches=dumps(duplicates), error="contact_match")
                 await self.notice(r, "duplicate_review", matches=duplicates)

@@ -114,8 +114,9 @@ class AlfaCRM:
                 raise CRMError("branch_search_mismatch")
         return records
 
-    async def own(self, request_id):
-        records = await self.customers()
+    async def own(self, request_id, records=None):
+        if records is None:
+            records = await self.customers()
         matches = [r for r in records if r.get(self.s.branch["request_field"]) == request_id]
         if len(matches) > 1:
             raise CRMError("request_id_not_unique")
@@ -151,9 +152,11 @@ class AlfaCRM:
                     raise CRMError("contact_format_unverified") from None
         return result
 
-    async def duplicates(self, data):
+    async def duplicates(self, data, records=None):
         keys = contact_keys(data)
-        return [r["id"] for r in await self.customers() if keys & self.contacts(r)]
+        if records is None:
+            records = await self.customers()
+        return [r["id"] for r in records if keys & self.contacts(r)]
 
     async def create(self, payload):
         return (await self.call(self.path("customer/create"), payload, True))["model"]

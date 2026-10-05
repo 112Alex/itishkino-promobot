@@ -24,12 +24,12 @@ export PROMOBOT_RUNTIME_DIR=/opt/itishkino-promobot-runtime
 
 ## Готовый образ и ограничения ресурсов
 
-Перенесите архив `itishkino-promobot-0.2.0-linux-amd64.tar.gz` и `SHA256SUMS` из каталога `outputs` текущего компьютера. На сервере, в каталоге с архивом:
+Перенесите архив `itishkino-promobot-0.2.1-linux-amd64.tar.gz` и `SHA256SUMS` из каталога `outputs` текущего компьютера. На сервере, в каталоге с архивом:
 
 ```sh
 sha256sum -c SHA256SUMS
-docker load -i itishkino-promobot-0.2.0-linux-amd64.tar.gz
-docker image inspect itishkino-promobot:0.2.0-amd64 --format '{{.Os}}/{{.Architecture}}'
+docker load -i itishkino-promobot-0.2.1-linux-amd64.tar.gz
+docker image inspect itishkino-promobot:0.2.1-amd64 --format '{{.Os}}/{{.Architecture}}'
 ```
 
 Результат архитектуры: `linux/amd64`. После загрузки Compose использует этот образ без скачивания и сборки. Если архива нет, сборка и экспорт выполняются на другом Linux-компьютере командой `sh scripts/build-image.sh`. Собирать на Mac Mini не обязательно.

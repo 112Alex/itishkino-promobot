@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "itishkino-promobot"
-version = "0.2.0"
+version = "0.2.1"
 description = "Persistent Telegram family intake and conservative Alfa CRM delivery"
 requires-python = ">=3.11,<3.15"
 dependencies = ["aiogram==3.31.0", "httpx==0.28.1", "aiosqlite==0.22.1", "phonenumbers==9.0.16", "python-dotenv==1.2.1", "aiohttp-socks==0.11.0"]

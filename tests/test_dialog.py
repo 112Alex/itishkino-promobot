@@ -89,10 +89,10 @@ async def test_slow_crm_does_not_block_intake(app):
     await app.intake()
     started, release = asyncio.Event(), asyncio.Event()
     original = app.crm.own
-    async def slow(ident):
+    async def slow(ident, records=None):
         started.set()
         await release.wait()
-        return await original(ident)
+        return await original(ident, records)
     app.crm.own = slow
     task = asyncio.create_task(app.worker.tick())
     await started.wait()
