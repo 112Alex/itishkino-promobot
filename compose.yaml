@@ -20,13 +20,13 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - type: bind
-        source: ./runtime/.env
+        source: ${PROMOBOT_RUNTIME_DIR:-./runtime}/.env
         target: /run/promobot/.env
         read_only: true
         bind:
           create_host_path: false
       - type: bind
-        source: ./runtime/config.json
+        source: ${PROMOBOT_RUNTIME_DIR:-./runtime}/config.json
         target: /run/promobot/config.json
         read_only: true
         bind:

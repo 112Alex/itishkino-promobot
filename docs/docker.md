@@ -8,6 +8,18 @@
 
 Создайте `runtime/.env` и `runtime/config.json` по README. Файлы содержат секреты/права доступа; права 600, владелец UID/GID 10001. Каталог `runtime` — 700. Примеры запуска рассчитаны на обычную Linux-файловую систему с действующими Unix-правами. На некоторых внешних накопителях chmod не работает: храните runtime на системном диске.
 
+Для локального `/mnt/storage`, где chmod не действует, разместите настройки отдельно. Compose поддерживает `PROMOBOT_RUNTIME_DIR` — это каталог файлов, а не переменная внутри контейнера:
+
+```sh
+sudo install -d -o 10001 -g 10001 -m 0700 /opt/itishkino-promobot-runtime
+sudo install -o 10001 -g 10001 -m 0600 ~/.config/itishkino-promobot/.env /opt/itishkino-promobot-runtime/.env
+sudo install -o 10001 -g 10001 -m 0600 ~/.config/itishkino-promobot/users-production.json /opt/itishkino-promobot-runtime/config.json
+sudoedit /opt/itishkino-promobot-runtime/.env
+export PROMOBOT_RUNTIME_DIR=/opt/itishkino-promobot-runtime
+```
+
+В этой копии env замените `DATABASE_PATH`, `CONFIG_PATH`, `BACKUP_PATH` на контейнерные пути из следующего раздела. Перед каждой командой Compose задавайте тот же `PROMOBOT_RUNTIME_DIR`, либо добавьте его в окружение своей оболочки. Исходные рабочие файлы не редактируйте для контейнерного запуска. На сервере с ext4 можно использовать обычный `./runtime` без этой переменной.
+
 Приложение читает `.env` внутри контейнера, а не через `env_file` Compose. Секреты не попадают в образ. Контейнер работает без root, без дополнительных capabilities, с read-only корнем. `/data` — постоянный volume, `/tmp` — временная память. Входящие порты не публикуются.
 
 ## Готовый образ и ограничения ресурсов
