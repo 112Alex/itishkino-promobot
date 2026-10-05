@@ -40,6 +40,15 @@ docker compose -f compose.yaml -f compose.vpn.yaml run --rm \
 
 Healthcheck подтверждает локальную SOCKS negotiation, **не handshake с VPN-сервером**. Готовность для бота подтверждает `network-check`: `telegram_proxy_configured: true`, `crm_proxy: false`, `crm: ok`, `telegram: ok`, `webhook_present: false`. Проверка использует временную базу и не запускает polling/отправку сообщений. Если VPN недоступен, firewall не разрешает прямой выход HTTPS/DNS через eth0. Ошибки запуска содержат только этап, без конфигурации и адресов.
 
+Если `telegram: unavailable`, выполните безопасную диагностику без пересборки образа:
+
+```sh
+docker compose -f compose.yaml -f compose.vpn.yaml exec -T vpn \
+  python3 - < scripts/vpn-diagnose.py
+```
+
+Она показывает возраст handshake, счётчики трафика и этап соединения SOCKS/TLS/HTTPS. Запрос идёт к публичному корню Telegram API без токена; сообщения не отправляются. `handshake_age_seconds: null`, растущий `sent_bytes` и нулевой `received_bytes` означают, что VPN-сессия пока не установлена. `socks_reply_code: 2` означает запрет правилами SOCKS; коды 3–5 — недоступную сеть/узел или отказ соединения. `connection: ok` подтверждает HTTPS через прокси; при таком результате и ошибке bot network-check отдельно проверяются настройки токена/API. Вывод не содержит ключей, VPN endpoint и URL с токеном.
+
 ## После переноса основной базы
 
 Перенесите актуальную SQLite по [инструкции миграции](tailscale-transfer.md#4-остановить-локальный-бот-и-перенести-финальную-базу). Одновременно должен работать один polling-экземпляр.
