@@ -187,3 +187,33 @@ async def test_cleanup_keeps_unfinished_events(app):
     with pytest.raises(asyncio.CancelledError):
         await task
     assert (await app.db.query("SELECT payload FROM inbox"))[0]["payload"]
+
+
+async def test_real_aiogram_updates_preserve_admin_identity(app):
+    from aiogram.types import Update
+    from promobot.telegram import Runtime
+    from_user={'id':app.s.admin,'is_bot':False,'first_name':'Synthetic','username':'test_admin'}
+    message={'message_id':800,'date':1790992800,'from':from_user,
+             'chat':{'id':app.s.admin,'type':'private'},'text':'/start'}
+    updates=[Update.model_validate({'update_id':800,'message':message}),
+             Update.model_validate({'update_id':801,'callback_query':{'id':'test-alias','chat_instance':'synthetic','from':from_user,
+                 'message':message,'data':'admin:list'}})]
+    class Bot:
+        count=0
+        async def get_updates(self,**kwargs):
+            self.count+=1
+            if self.count==1:return updates
+            raise asyncio.CancelledError
+    runtime=Runtime(app.db,app.s,Bot(),app.dialog,app.worker)
+    with pytest.raises(asyncio.CancelledError):await runtime.polling()
+    stored=await app.db.query('SELECT user_id FROM inbox ORDER BY update_id')
+    assert [x['user_id'] for x in stored]==[app.s.admin,app.s.admin]
+    await app.dialog.process(800)
+    await app.dialog.process(801)
+    responses=await app.db.query("SELECT payload FROM outbox WHERE kind='send' ORDER BY id")
+    assert 'Добавить лида' in responses[0]['payload']
+    assert 'Промоутеры' in responses[0]['payload']
+    assert 'Промоутеры' in responses[1]['payload']
+    assert 'Доступ не разрешён' not in str(responses)
+    users=await app.db.query('SELECT user_id,username FROM telegram_users')
+    assert users==[{'user_id':app.s.admin,'username':'test_admin'}]

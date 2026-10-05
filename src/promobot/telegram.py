@@ -104,7 +104,7 @@ class Runtime:
             try:
                 batch = await self.bot.get_updates(offset=await self.db.offset(), timeout=30,
                                                    allowed_updates=["message", "callback_query"], request_timeout=45)
-                await self.db.ingest(self.dialog.bot_id, [u.model_dump(mode="json", exclude_none=True) for u in batch])
+                await self.db.ingest(self.dialog.bot_id, [u.model_dump(mode="json", by_alias=True, exclude_none=True) for u in batch])
                 await self.network_state("up")
                 delay = 1
             except (TelegramAPIError, OSError):
