@@ -288,3 +288,32 @@ async def test_untrustworthy_pagination_blocks_create(app, case):
     assert await state(app) in {"manual_review", "retry_wait"}
     assert not await app.mock.store.query("SELECT * FROM mock_models")
     await crm.close()
+
+
+async def test_legacy_possible_but_unassigned_phone_does_not_block_new_lead(app):
+    import phonenumbers
+    legacy='+7(000)000-00-00'
+    assert phonenumbers.is_possible_number(phonenumbers.parse(legacy,None))
+    assert not phonenumbers.is_valid_number(phonenumbers.parse(legacy,None))
+    old=await app.crm.create({'name':'Legacy','branch_ids':[901],'phone':[legacy],'web':[]})
+    assert app.crm.contacts(old)=={'phone:+70000000000'}
+    await app.intake()
+    await app.worker.tick()
+    assert await state(app)=='delivered'
+    assert len(await app.crm.customers())==2
+    assert (await app.crm.customers())[0]==old
+
+
+@pytest.mark.parametrize('legacy',['123','+7 999 123-45-67 / 68','+7 999 123-45-67 доб. 12',{'value':'+79991234567'}])
+async def test_ambiguous_legacy_phone_still_blocks_creation(app,legacy):
+    await app.crm.create({'name':'Legacy','branch_ids':[901],'phone':[legacy],'web':[]})
+    await app.intake()
+    await app.worker.tick()
+    assert await state(app)=='manual_review'
+    assert len(await app.crm.customers())==1
+    assert (await app.db.query('SELECT error FROM requests'))[0]['error']=='contact_format_unverified'
+
+
+async def test_legacy_possible_number_is_not_ignored_in_duplicate_comparison(app):
+    await app.crm.create({'name':'Legacy','branch_ids':[901],'phone':['+7(000)000-00-00'],'web':[]})
+    assert await app.crm.duplicates({'phones':['+70000000000']})==[1]

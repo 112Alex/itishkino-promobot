@@ -1,8 +1,10 @@
 import asyncio
 import json
+import re
 import time
 import httpx
-from .domain import InputError, phone, username, contact_keys
+import phonenumbers
+from .domain import InputError, username, contact_keys
 
 
 class CRMError(Exception):
@@ -126,8 +128,17 @@ class AlfaCRM:
                 raise CRMError("contact_format_unverified")
             if p:
                 try:
-                    result.add("phone:" + phone(p))
-                except InputError:
+                    # Legacy CRM numbers may be unassigned according to numbering
+                    # metadata. Keep their canonical keys instead of blocking all
+                    # new requests; input validation remains stricter.
+                    value = p.strip()
+                    if not re.fullmatch(r"\+?[0-9\s().-]+", value):
+                        raise ValueError
+                    parsed = phonenumbers.parse(value, "RU" if not value.startswith("+") else None)
+                    if not phonenumbers.is_possible_number(parsed) or parsed.extension:
+                        raise ValueError
+                    result.add("phone:" + phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164))
+                except (ValueError, phonenumbers.NumberParseException):
                     # Cannot reliably exclude contact equality in unsupported formats.
                     raise CRMError("contact_format_unverified") from None
         for u in record.get("web", []):
