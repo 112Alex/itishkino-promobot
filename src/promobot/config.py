@@ -44,7 +44,7 @@ class Settings:
             cfg = json.loads(Path(e.get("CONFIG_PATH", "config/mock.json")).read_text())
             s = cls(e.get("ENVIRONMENT", "test"), e.get("CRM_MODE", "mock"),
                     Path(e.get("DATABASE_PATH", "var/test/bot.sqlite3")), cfg["branch"],
-                    {int(k): v for k, v in cfg["promoters"].items()},
+                    {int(k): v for k, v in cfg.get("promoters", {}).items()},
                     int(e.get("ADMIN_TELEGRAM_ID", "0")), e.get("TELEGRAM_BOT_TOKEN", ""),
                     e.get("CRM_BASE_URL", "https://itishkino.s20.online"),
                     e.get("CRM_EMAIL", ""), e.get("CRM_API_KEY", ""),
@@ -56,6 +56,9 @@ class Settings:
                     int(e.get("INBOX_RETENTION_DAYS", "7")), Path(e.get("BACKUP_PATH", "var/backups")),
                     int(e.get("BACKUP_KEEP", "14")))
             s.administrators = {int(k): v for k, v in cfg.get("administrators", {}).items()}
+            for uid in e.get("ADMIN_TELEGRAM_IDS", "").split(","):
+                if uid.strip():
+                    s.administrators[int(uid.strip())] = cfg["branch"]["key"]
         except (OSError, ValueError, KeyError, TypeError):
             raise ConfigurationError("Не удалось прочитать настройки; проверьте локальный env и JSON") from None
         s.validate()
@@ -88,6 +91,10 @@ class Settings:
             raise ConfigurationError("Реальная запись закрыта: подтвердите контракт и ID по инструкции приёмки")
         if not str(b.get("request_field", "")).startswith("custom_") or not b.get("source_name"):
             raise ConfigurationError("Проверьте источник и системное имя custom-поля")
+
+    @property
+    def admin_ids(self):
+        return tuple(sorted({self.admin, *self.administrators}))
 
     def is_admin(self, uid):
         return uid == self.admin or uid in self.administrators

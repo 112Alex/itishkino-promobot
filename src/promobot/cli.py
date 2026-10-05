@@ -87,6 +87,30 @@ async def health(db, crm, s, telegram_check=False):
     print(json.dumps(report, ensure_ascii=False, indent=2))
 
 
+async def network_check(crm, settings):
+    report = {"telegram_proxy_configured": bool(settings.proxy), "crm_proxy": False}
+    try:
+        await crm.login()
+        report["crm"] = "ok" if settings.mode == "real" else "mock"
+    except CRMError as exc:
+        report["crm"] = exc.code
+    if not settings.token:
+        report["telegram"] = "token_missing"
+    else:
+        bot = make_bot(settings)
+        try:
+            me = await bot.get_me()
+            webhook = await bot.get_webhook_info()
+            report.update(telegram="ok", bot_username=me.username, webhook_present=bool(webhook.url))
+        except Exception:
+            report["telegram"] = "unavailable"
+        finally:
+            await bot.session.close()
+    print(json.dumps(report, ensure_ascii=False))
+    if report["telegram"] != "ok" or report["crm"] not in {"ok", "mock"} or report.get("webhook_present"):
+        raise ConfigurationError("Проверка подключения не пройдена; проверьте VPN/proxy, токен, CRM и webhook. Сообщения не отправлялись.")
+
+
 async def async_main(args):
     load_dotenv(args.env, override=False)
     s = Settings.load()
@@ -99,6 +123,8 @@ async def async_main(args):
         crm = AlfaCRM(s, mock.client() if mock else None)
         if args.command == "bootstrap":
             await bootstrap(crm, s)
+        elif args.command == "network-check":
+            await network_check(crm, s)
         elif args.command == "doctor":
             await health(db, crm, s, args.telegram_check)
         elif args.command == "backup":
@@ -177,7 +203,7 @@ def main():
     p = argparse.ArgumentParser(description="Промобот Айтишкино")
     p.add_argument("--env", default=".env.test", help="Путь к защищённому env-файлу")
     sub = p.add_subparsers(dest="command", required=True)
-    for command in ("run", "bootstrap", "backup", "outbox-retry"):
+    for command in ("run", "bootstrap", "backup", "outbox-retry", "network-check"):
         sub.add_parser(command)
     server = sub.add_parser("mock-server")
     server.add_argument("--port", type=int, default=8081)

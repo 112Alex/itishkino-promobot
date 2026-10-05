@@ -28,6 +28,8 @@ class MockCRM:
             if operation == "create":
                 ident = max([r["id"] for r in found] + [0]) + 1
                 model = {**body, "id": ident}
+                if kind == "customer" and self.s.branch.get("initial_unassigned"):
+                    model.setdefault("lead_status_id", None)
                 if kind == "communication":
                     model.update(related_id=int(query["related_id"][0]), branch_id=self.s.branch["crm_id"],
                                  user_id=self.s.branch.get("technical_user_id") or 990, **{"class": "Customer"})

@@ -3,6 +3,7 @@ import uuid
 from datetime import datetime, timezone, timedelta
 from .domain import InputError, age, clean, family, name, now, phone, review, title, username
 from .storage import dumps, enqueue, one, rows
+from .members import Members
 
 LABELS = {"queued": "В очереди", "checking": "Проверяется", "creating": "Создаётся",
           "crm_created": "Карточка создана, проверяем", "comment_pending": "Сохраняется комментарий",
@@ -21,6 +22,7 @@ HELP = ("Одна анкета — одна семья. Добавляйте в�
 class Dialog:
     def __init__(self, store, settings, bot_id):
         self.db, self.s, self.bot_id = store, settings, str(bot_id)
+        self.members = Members(settings, bot_id)
 
     def menu(self, has_draft=False, admin=False):
         result = [[("Добавить лида", "menu:new")]]
@@ -28,6 +30,7 @@ class Dialog:
             result.append([("Продолжить анкету", "menu:continue")])
         result += [[("Мои заявки", "menu:mine")], [("Помощь", "menu:help")]]
         if admin:
+            result.append([("Промоутеры", "admin:list")])
             result.append([("Проблемные заявки", "menu:problems")])
         return result
 
@@ -119,11 +122,20 @@ class Dialog:
             if q:
                 await enqueue(c, key + ":ack", chat, q["id"], kind="ack")
             private = message.get("chat", {}).get("type") == "private"
+            sender = (q or {}).get("from") or message.get("from", {})
+            await self.members.seed(c)
+            if private and chat == uid:
+                await self.members.observe(c, sender)
+            authorized = await self.members.authorized(c, uid)
+            if private and chat == uid and await self.members.handle(c, uid, text, action, reply):
+                await c.execute("UPDATE inbox SET state='done' WHERE bot_id=? AND update_id=?", (self.bot_id, update_id))
+                return
             if text.split("@", 1)[0] == "/id" and uid:
                 await reply(f"Ваш Telegram ID: {uid}")
-            elif not private or not self.s.authorized(uid):
+            elif not private or chat != uid or sender.get("is_bot") or not authorized:
                 if private and chat:
-                    await reply("Доступ не разрешён. Отправьте свой /id владельцу.")
+                    pending = await one(c, "SELECT id FROM promoter_invites WHERE bot_id=? AND branch_key=? AND candidate_id=? AND state='approval'", (self.bot_id, self.s.branch['key'], uid))
+                    await reply("Ваш аккаунт найден. Дождитесь подтверждения администратора, затем отправьте /start." if pending else "Доступ не разрешён. Отправьте свой /id администратору.")
             else:
                 d = await self.draft(c, uid, chat)
                 stale = bool(d and (d["data"].get("_stale") or datetime.fromisoformat(d["updated_at"]) < datetime.now(timezone.utc) - timedelta(hours=24)))

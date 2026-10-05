@@ -41,7 +41,8 @@ class Worker:
                 if matches:
                     text += " CRM ID: " + ", ".join(str(i) for i in matches)
                 text += f'\nПодробности: /request {r["id"]}'
-                await enqueue(c, f'{r["id"]}:{state}:admin', self.s.admin, text, request_id=r["id"])
+                for admin in self.s.admin_ids:
+                    await enqueue(c, f'alert:{r["id"]}:{state}:admin:{admin}', admin, text, request_id=r["id"])
                 if state == "duplicate_review":
                     await enqueue(c, f'{r["id"]}:duplicate:user', r["chat_id"],
                                   "Контакт уже есть в CRM. Заявка передана администратору", request_id=r["id"])

@@ -2,7 +2,11 @@ name: itishkino-promobot
 services:
   bot:
     build: .
-    image: itishkino-promobot:local
+    image: itishkino-promobot:0.2.0-amd64
+    platform: linux/amd64
+    cpus: 0.75
+    mem_limit: 256m
+    pids_limit: 64
     restart: unless-stopped
     init: true
     read_only: true

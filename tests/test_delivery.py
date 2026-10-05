@@ -79,7 +79,7 @@ async def test_uncertain_empty_search_goes_manual_never_blind_create(app):
     await app.event("/retry " + r["id"], uid=app.s.admin)
     await app.worker.tick()
     assert calls == 1
-    notices = await app.db.query("SELECT * FROM outbox WHERE dedupe LIKE '%retry_wait:admin'")
+    notices = await app.db.query("SELECT * FROM outbox WHERE dedupe LIKE '%retry_wait:admin:%'")
     assert len(notices) == 1
 
 

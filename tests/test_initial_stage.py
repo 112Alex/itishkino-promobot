@@ -32,3 +32,14 @@ async def test_null_stage_does_not_bypass_unverified_contract(app):
     from promobot.config import ConfigurationError
     with pytest.raises(ConfigurationError):
         app.s.require_real_contract()
+
+
+async def test_initial_unassigned_mock_delivery(app):
+    app.s.branch.update(initial_unassigned=True, status_id=None, pipeline_id=1)
+    request = await app.intake()
+    await app.worker.tick()
+    saved = (await app.db.query('SELECT state,crm_id FROM requests WHERE id=?', (request['id'],)))[0]
+    assert saved['state'] == 'delivered'
+    cards = await app.mock.store.query("SELECT body FROM mock_models WHERE kind='customer'")
+    assert len(cards) == 1
+    assert json.loads(cards[0]['body'])['lead_status_id'] is None

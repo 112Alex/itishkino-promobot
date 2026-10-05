@@ -29,15 +29,14 @@ async def test_branch_admin_can_read_and_retry_but_not_override_duplicate(app):
     assert (await app.db.query('SELECT state FROM jobs'))[0]['state'] == 'done'
 
 
-async def test_admin_notifications_still_only_go_to_owner(app):
+async def test_admin_notifications_go_to_all_admins(app):
     app.s.administrators = {10005: 'preobrazhenka'}
     await app.intake()
     await app.db.execute("DELETE FROM outbox")
     await app.crm.create({'name': 'Old', 'branch_ids': [901], 'phone': ['+79991234567'], 'web': []})
     await app.worker.tick()
     chats = {r['chat_id'] for r in await app.db.query('SELECT chat_id FROM outbox')}
-    assert chats == {app.s.admin, 10002}
-    assert 10005 not in chats
+    assert chats == {app.s.admin, 10002, 10005}
 
 
 async def test_admin_cannot_edit_someone_elses_draft(app):

@@ -24,7 +24,7 @@ async def app(tmp_path):
     dialog = Dialog(db, s, "42")
     worker = Worker(db, s, crm)
     counter = 0
-    async def event(text=None, action=None, uid=10002, update_id=None, chat_type="private", callback=None, date=1790992800):
+    async def event(text=None, action=None, uid=10002, update_id=None, chat_type="private", callback=None, date=1790992800, username=None):
         nonlocal counter
         counter += 1
         n = update_id if update_id is not None else counter
@@ -32,6 +32,8 @@ async def app(tmp_path):
                "chat": {"id": uid, "type": chat_type}, "text": text} if text is not None else {
                "message_id": n, "date": date, "from": {"id": uid, "is_bot": False, "first_name": "P"},
                "chat": {"id": uid, "type": chat_type}}
+        if username:
+            msg["from"]["username"] = username
         if action:
             ds = await db.query("SELECT * FROM drafts WHERE user_id=? AND active=1", (uid,))
             if action.startswith("menu:"):

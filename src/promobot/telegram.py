@@ -76,10 +76,21 @@ class Outbox:
                 await self.db.execute("UPDATE outbox SET state='done',message_id=?,error=NULL,payload=NULL WHERE id=?", (mid, r["id"]))
             except (TelegramForbiddenError, TelegramBadRequest):
                 await self.db.execute("UPDATE outbox SET state='held',error='telegram_rejected' WHERE id=?", (r["id"],))
+                await self.alert(r, 'telegram_rejected')
             except (TelegramAPIError, OSError) as exc:
                 delay = exc.retry_after if isinstance(exc, TelegramRetryAfter) else min(self.s.retry_cap, self.s.retry_base * 2 ** min(r["attempts"] + 1, 16))
                 await self.db.execute("UPDATE outbox SET state='pending',next_at=?,error='telegram_unavailable' WHERE id=?", (time.time()+delay, r["id"]))
+                await self.alert(r, 'telegram_unavailable')
             return True
+
+
+    async def alert(self, message, code):
+        if message['kind'] != 'send' or message['dedupe'].startswith('alert:'):
+            return
+        async with self.db.tx() as c:
+            for admin in self.s.admin_ids:
+                await enqueue(c, f'alert:outbox:{message["id"]}:{admin}', admin,
+                              f'Не удалось доставить уведомление №{message["id"]}. Код: {code}. Очередь сохранена.')
 
 
 class Runtime:
@@ -109,14 +120,16 @@ class Runtime:
                 return
             await c.execute("INSERT OR REPLACE INTO metadata VALUES('telegram_network',?)", (state,))
             if state == "down" or old:
-                await enqueue(c, f'network:{state}:{now()}', self.s.admin,
-                              "Связь с Telegram восстановлена" if state == "up" else "Связь с Telegram была недоступна. Сохранённая очередь не потеряна.")
+                stamp = now()
+                for admin in self.s.admin_ids:
+                    await enqueue(c, f'alert:network:{state}:{stamp}:{admin}', admin,
+                                  "Связь с Telegram восстановлена" if state == "up" else "Связь с Telegram была недоступна. Сохранённая очередь не потеряна.")
 
     async def inbox(self):
         while True:
             events = await self.db.query("SELECT min(update_id) AS update_id,user_id FROM inbox WHERE state='pending' AND bot_id=? GROUP BY user_id ORDER BY update_id LIMIT 3", (self.dialog.bot_id,))
             if not events:
-                await asyncio.sleep(.1)
+                await asyncio.sleep(.5)
                 continue
             async def apply(e):
                 try:
@@ -126,8 +139,9 @@ class Runtime:
                 except (ValueError, KeyError, TypeError):
                     async with self.db.tx() as c:
                         await c.execute("UPDATE inbox SET state='failed',error='invalid_event' WHERE bot_id=? AND update_id=?", (self.dialog.bot_id, e["update_id"]))
-                        await enqueue(c, f'invalid:{self.dialog.bot_id}:{e["update_id"]}', self.s.admin,
-                                      "Входящее событие требует проверки. Код: invalid_event. Анкета сохранена.")
+                        for admin in self.s.admin_ids:
+                            await enqueue(c, f'alert:invalid:{self.dialog.bot_id}:{e["update_id"]}:{admin}', admin,
+                                          "Входящее событие требует проверки. Код: invalid_event. Анкета сохранена.")
             # Each user contributes only their oldest event; the next batch follows commit.
             await asyncio.gather(*(apply(e) for e in events))
 
@@ -145,10 +159,21 @@ class Runtime:
             await asyncio.sleep(3600)
 
     async def run(self):
-        await self.worker.recover()
-        async with asyncio.TaskGroup() as tasks:
-            tasks.create_task(self.polling())
-            tasks.create_task(self.inbox())
-            tasks.create_task(self.loop(self.worker.tick, .5))
-            tasks.create_task(self.loop(self.outbox.tick, .1))
-            tasks.create_task(self.cleanup())
+        try:
+            await self.worker.recover()
+            async with asyncio.TaskGroup() as tasks:
+                tasks.create_task(self.polling())
+                tasks.create_task(self.inbox())
+                tasks.create_task(self.loop(self.worker.tick, .5))
+                tasks.create_task(self.loop(self.outbox.tick, .5))
+                tasks.create_task(self.cleanup())
+        except Exception:
+            # Deliver after restart, if SQLite remains writable. Bound crash-loop alerts.
+            try:
+                async with self.db.tx() as c:
+                    for admin in self.s.admin_ids:
+                        await enqueue(c, f'alert:service:{int(time.time() // 3600)}:{admin}', admin,
+                                      'Бот завершился с ошибкой service_failed. Проверьте журнал контейнера. Сохранённая очередь будет обработана после запуска.')
+            except Exception:
+                log.error('service_alert_unavailable')
+            raise

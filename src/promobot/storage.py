@@ -89,7 +89,7 @@ class Store:
                 def message_fields(m):
                     return {k: m[k] for k in ("message_id", "date", "text") if k in m} | {
                         "chat": {k: m.get("chat", {})[k] for k in ("id", "type") if k in m.get("chat", {})},
-                        "from": {"id": m.get("from", {}).get("id", 0)}}
+                        "from": {k: m.get("from", {})[k] for k in ("id", "username", "is_bot") if k in m.get("from", {})}}
                 original = u
                 u = {"update_id": original["update_id"]}
                 if "message" in original:
@@ -97,7 +97,7 @@ class Store:
                 elif "callback_query" in original:
                     q = original["callback_query"]
                     u["callback_query"] = {"id": q["id"], "data": q.get("data", ""),
-                        "from": {"id": q.get("from", {}).get("id", 0)},
+                        "from": {k: q.get("from", {})[k] for k in ("id", "username", "is_bot") if k in q.get("from", {})},
                         "message": message_fields(q.get("message", {}))}
                 m = u.get("message") or u.get("callback_query", {}).get("message") or {}
                 uid = (u.get("callback_query", {}).get("from") or m.get("from") or {}).get("id", 0)

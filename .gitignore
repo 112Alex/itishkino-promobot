@@ -19,3 +19,4 @@ runtime/
 !requirements.lock
 !requirements.runtime.lock
 backups/
+outputs/
