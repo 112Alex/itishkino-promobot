@@ -48,12 +48,14 @@ BACKUP_PATH=/data/backups
 
 В `.env` также должны остаться `ADMIN_TELEGRAM_IDS` с ID Олега и Амира. Владелец указан отдельно в `ADMIN_TELEGRAM_ID`. Токен, email, API-ключ и реальные роли сохраняются. Промоутеры, добавленные в меню, хранятся в БД: переносите её, чтобы сохранить доступ. Старые промоутеры из JSON импортируются однократно при первом личном событии после обновления. Локальную копию бота обязательно остановите перед запуском серверной.
 
-Если уже принимали реальные анкеты, сохраните БД. Остановите локальную копию, затем выполните локально `promobot --env .env backup` и передайте полученную SQLite-копию по SSH. Перед первым запуском восстановите её в volume контейнера:
+Если текущий бот работает в Docker, рабочая БД находится в volume. Подробный порядок с финальным backup после остановки и импортом без перезаписи: [перенос через Tailscale](tailscale-transfer.md). Для текущей локальной Docker-копии выполните `docker compose stop bot`, затем `docker compose run --rm bot backup`, скопируйте новую копию командой `docker compose cp bot:/data/backups/ИМЯ-КОПИИ.sqlite3 /защищённый/каталог/` и передайте её по SSH. Локальный `promobot --env .env backup` относится к прежнему запуску вне Docker и не копирует рабочий Docker volume.
+
+Следующий вариант через `compose cp` допустим только при первой установке, когда целевого файла ещё нет:
 
 ```sh
 docker compose create bot
 docker compose cp /путь/к/копии.sqlite3 bot:/data/prod/bot.sqlite3
-docker compose run --rm --user 0 --entrypoint sh bot -c 'chown 10001:10001 /data/prod/bot.sqlite3 && chmod 600 /data/prod/bot.sqlite3'
+docker compose run --rm --user 0 --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --entrypoint sh bot -c 'chown 10001:10001 /data/prod/bot.sqlite3 && chmod 600 /data/prod/bot.sqlite3'
 docker compose run --rm bot network-check
 docker compose run --rm bot doctor
 docker compose up -d --no-build
