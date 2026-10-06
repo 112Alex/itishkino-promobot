@@ -6,6 +6,7 @@ import time
 from .crm import CRMError
 from .domain import InputError, communication, contact_keys, crm_payload, moscow, now
 from .storage import dumps, enqueue, one
+from .access import administrators
 
 log = logging.getLogger("promobot")
 
@@ -41,7 +42,7 @@ class Worker:
                 if matches:
                     text += " CRM ID: " + ", ".join(str(i) for i in matches)
                 text += f'\nПодробности: /request {r["id"]}'
-                for admin in self.s.admin_ids:
+                for admin in await administrators(c, self.s, r['branch_key']):
                     await enqueue(c, f'alert:{r["id"]}:{state}:admin:{admin}', admin, text, request_id=r["id"])
                 if state == "duplicate_review":
                     await enqueue(c, f'{r["id"]}:duplicate:user', r["chat_id"],
@@ -75,7 +76,7 @@ class Worker:
             started = time.monotonic()
             try:
                 if self.s.mode == "real":
-                    self.s.require_real_contract()
+                    self.s.for_branch(r['branch_key']).require_real_contract()
                 await self.deliver(r, job["phase"])
                 await self.db.execute("UPDATE jobs SET state='done',error=NULL WHERE request_id=?", (r["id"],))
                 await self.db.execute("UPDATE delivery_attempts SET finished_at=?,outcome='completed' WHERE id=?", (now(), attempt_id))
@@ -107,14 +108,18 @@ class Worker:
             return True
 
     async def deliver(self, r, phase):
+        settings = self.s.for_branch(r['branch_key'])
+        crm = self.crm.for_branch(r['branch_key'])
+        if r['crm_branch_id'] != settings.branch['crm_id']:
+            raise CRMError('branch_configuration_mismatch')
         snapshot = r["data"].get("crm_settings", {})
-        if any(self.s.branch.get(k) != v for k, v in snapshot.items()):
+        if any(settings.branch.get(k) != v for k, v in snapshot.items()):
             raise CRMError("configuration_changed")
-        payload = crm_payload(r, self.s)
+        payload = crm_payload(r, settings)
         await self.change(r["id"], "checking" if phase == "check" else "verifying")
         # One fresh, complete scan per attempt, reused only within this check.
-        records = await self.crm.customers() if phase == "check" else None
-        own = await self.crm.own(r["id"], records)
+        records = await crm.customers() if phase == "check" else None
+        own = await crm.own(r["id"], records)
         if own:
             r["crm_id"] = own["id"]
             await self.change(r["id"], "crm_created", phase if phase in {"reconcile_comment", "verify"} else "comment_check", crm_id=own["id"])
@@ -125,20 +130,20 @@ class Worker:
             raise CRMError("write_outcome_unknown", True)
         else:
             await self.claim_contacts(r)
-            duplicates = await self.crm.duplicates(r["data"], records)
+            duplicates = await crm.duplicates(r["data"], records)
             if duplicates:
                 await self.change(r["id"], "duplicate_review", matches=dumps(duplicates), error="contact_match")
                 await self.notice(r, "duplicate_review", matches=duplicates)
                 return
             await self.change(r["id"], "creating", "reconcile_create")
-            model = await self.crm.create(payload)
+            model = await crm.create(payload)
             r["crm_id"] = model["id"]
             await self.change(r["id"], "crm_created", "comment_check", crm_id=model["id"])
         # Verify before adding a communication, so automation conflicts don't cause more writes.
-        await self.crm.verify(r["crm_id"], payload)
+        await crm.verify(r["crm_id"], payload)
         if r["data"].get("comment"):
             mark = f'[promobot:{r["id"]}]'
-            found = [x for x in await self.crm.comments(r["crm_id"]) if mark in x.get("comment", "").splitlines()]
+            found = [x for x in await crm.comments(r["crm_id"]) if mark in x.get("comment", "").splitlines()]
             if len(found) > 1:
                 raise CRMError("comment_not_unique")
             if not found:
@@ -148,19 +153,19 @@ class Worker:
                     raise CRMError("comment_outcome_unknown", True)
                 await self.change(r["id"], "comment_pending", "reconcile_comment")
                 try:
-                    created = await self.crm.add_comment(r["crm_id"], communication(r))
+                    created = await crm.add_comment(r["crm_id"], communication(r))
                 except CRMError as exc:
                     if not exc.ambiguous:
                         await self.db.execute("UPDATE jobs SET phase='comment_check' WHERE request_id=?", (r["id"],))
                     raise
                 await self.change(r["id"], "verifying", "verify", communication_id=created["id"])
-                found = [x for x in await self.crm.comments(r["crm_id"]) if mark in x.get("comment", "").splitlines()]
+                found = [x for x in await crm.comments(r["crm_id"]) if mark in x.get("comment", "").splitlines()]
             if len(found) != 1 or found[0].get("comment") != communication(r):
                 raise CRMError("comment_verify_mismatch", True)
-            expected_user = self.s.branch.get("technical_user_id") or (990 if self.s.mode == "mock" else None)
+            expected_user = settings.branch.get("technical_user_id") or (990 if self.s.mode == "mock" else None)
             if found[0].get("user_id") != expected_user or found[0].get("type_id") != 1:
                 raise CRMError("comment_author_mismatch")
             await self.change(r["id"], "verifying", "verify", communication_id=found[0]["id"])
-        await self.crm.verify(r["crm_id"], payload)
+        await crm.verify(r["crm_id"], payload)
         await self.change(r["id"], "delivered", "verify", verified_at=now(), error=None)
         await self.notice(r, "delivered")

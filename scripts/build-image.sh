@@ -1,8 +1,8 @@
 #!/bin/sh
 # Run from the repository root. Exports a Linux amd64 image for Intel Mac Mini.
 set -eu
-image_name=itishkino-promobot:0.2.1-amd64
-archive_name=itishkino-promobot-0.2.1-linux-amd64.tar.gz
+image_name=itishkino-promobot:0.3.0-amd64
+archive_name=itishkino-promobot-0.3.0-linux-amd64.tar.gz
 mkdir -p outputs
 docker build --platform linux/amd64 -t "$image_name" .
 # A failed docker save must not leave an apparently valid gzip archive.

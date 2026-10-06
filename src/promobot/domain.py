@@ -109,3 +109,16 @@ def crm_payload(request, settings):
 
 def communication(request):
     return html.escape(request["data"]["comment"]) + f'\n[promobot:{request["id"]}]'
+
+
+def telegram_chunks(text, limit=3500):
+    # Telegram offsets use UTF-16. Keep astral characters together and leave room for the page heading.
+    pages, current, units = [], [], 0
+    for character in text:
+        size = 2 if ord(character) > 0xffff else 1
+        if units + size > limit:
+            pages.append(''.join(current))
+            current, units = [], 0
+        current.append(character)
+        units += size
+    return pages + [''.join(current)]

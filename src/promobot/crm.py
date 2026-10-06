@@ -24,11 +24,20 @@ class Limiter:
 
 
 class AlfaCRM:
-    def __init__(self, settings, client=None):
+    def __init__(self, settings, client=None, root=None):
         self.s = settings
         self.client = client or httpx.AsyncClient(base_url=settings.crm_url, timeout=settings.timeout, trust_env=False)
         self.limiter = Limiter(settings.interval)
         self.token, self.expires, self.auth_lock = None, 0., asyncio.Lock()
+        self.root = root
+        if root:
+            self.limiter = root.limiter
+
+    def for_branch(self, key):
+        if key == self.s.branch['key']:
+            return self
+        root = self.root or self
+        return AlfaCRM(self.s.for_branch(key), self.client, root=root)
 
     async def raw(self, path, body, write=False, token=None):
         await self.limiter.wait()
@@ -60,6 +69,8 @@ class AlfaCRM:
         return data
 
     async def login(self):
+        if self.root:
+            return await self.root.login()
         async with self.auth_lock:
             if self.token and self.expires > time.monotonic():
                 return
@@ -71,6 +82,8 @@ class AlfaCRM:
             self.token, self.expires = data["token"], time.monotonic() + 3300
 
     async def call(self, path, body, write=False):
+        if self.root:
+            return await self.root.call(path, body, write)
         await self.login()
         try:
             return await self.raw(path, body, write, self.token)

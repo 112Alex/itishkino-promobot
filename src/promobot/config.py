@@ -1,7 +1,8 @@
 import json
 import os
+import re
 import stat
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -36,6 +37,7 @@ class Settings:
     backup_path: Path = Path("var/backups")
     backup_keep: int = 14
     administrators: dict[int, str] = field(default_factory=dict)
+    branches: dict[str, dict] = field(default_factory=dict)
 
     @classmethod
     def load(cls):
@@ -45,7 +47,7 @@ class Settings:
             s = cls(e.get("ENVIRONMENT", "test"), e.get("CRM_MODE", "mock"),
                     Path(e.get("DATABASE_PATH", "var/test/bot.sqlite3")), cfg["branch"],
                     {int(k): v for k, v in cfg.get("promoters", {}).items()},
-                    int(e.get("ADMIN_TELEGRAM_ID", "0")), e.get("TELEGRAM_BOT_TOKEN", ""),
+                    int(e.get("ADMIN_TELEGRAM_ID") or "0"), e.get("TELEGRAM_BOT_TOKEN", ""),
                     e.get("CRM_BASE_URL", "https://itishkino.s20.online"),
                     e.get("CRM_EMAIL", ""), e.get("CRM_API_KEY", ""),
                     e.get("TELEGRAM_PROXY") or None,
@@ -56,9 +58,15 @@ class Settings:
                     int(e.get("INBOX_RETENTION_DAYS", "7")), Path(e.get("BACKUP_PATH", "var/backups")),
                     int(e.get("BACKUP_KEEP", "14")))
             s.administrators = {int(k): v for k, v in cfg.get("administrators", {}).items()}
-            for uid in e.get("ADMIN_TELEGRAM_IDS", "").split(","):
-                if uid.strip():
-                    s.administrators[int(uid.strip())] = cfg["branch"]["key"]
+            initial_ids = [int(uid.strip()) for uid in e.get("ADMIN_TELEGRAM_IDS", "").split(",") if uid.strip()]
+            for uid in initial_ids:
+                s.administrators[uid] = cfg["branch"]["key"]
+            if not s.admin and s.administrators:
+                s.admin = initial_ids[0] if initial_ids else next(iter(s.administrators))
+            s.branches = {b['key']: b for b in cfg.get('branches', [])}
+            if len(s.branches) != len(cfg.get('branches', [])):
+                raise ValueError('Duplicate branch')
+            s.branches[s.branch['key']] = s.branch
         except (OSError, ValueError, KeyError, TypeError):
             raise ConfigurationError("Не удалось прочитать настройки; проверьте локальный env и JSON") from None
         s.validate()
@@ -67,8 +75,18 @@ class Settings:
     def validate(self):
         if self.environment not in {"test", "prod"} or self.mode not in {"mock", "real"}:
             raise ConfigurationError("ENVIRONMENT: test/prod; CRM_MODE: mock/real")
-        if self.admin <= 0 or any(i <= 0 or b != self.branch["key"] for mapping in (self.promoters, self.administrators) for i, b in mapping.items()):
+        if self.admin <= 0 or any(i <= 0 or b not in self.all_branches for mapping in (self.promoters, self.administrators) for i, b in mapping.items()):
             raise ConfigurationError("Укажите числовые ID владельца и привязку промоутеров")
+        branches = self.all_branches
+        for key, branch in branches.items():
+            crm_id = branch.get('crm_id')
+            unknown_default = crm_id is None and len(branches) == 1
+            if (not re.fullmatch(r'[a-z][a-z0-9_]{0,23}', key)
+                    or not isinstance(branch.get('name'), str) or not branch['name'].strip()
+                    or (not unknown_default and (type(crm_id) is not int or crm_id <= 0))):
+                raise ConfigurationError('Проверьте ключ, имя и CRM ID филиала')
+        if len({b.get('crm_id') for b in branches.values()}) != len(branches):
+            raise ConfigurationError('CRM ID филиалов должны быть уникальными')
         if self.environment == "prod" and self.mode != "real":
             raise ConfigurationError("Для prod требуется real; тесты запускайте отдельно")
         if self.interval < .25 or self.max_attempts < 1 or self.timeout <= 0 or self.backup_keep < 1:
@@ -98,6 +116,16 @@ class Settings:
 
     def is_admin(self, uid):
         return uid == self.admin or uid in self.administrators
+
+    @property
+    def all_branches(self):
+        return {**self.branches, self.branch['key']: self.branch}
+
+    def for_branch(self, key):
+        try:
+            return replace(self, branch=self.all_branches[key], branches=self.all_branches)
+        except KeyError:
+            raise ConfigurationError('Филиал недоступен') from None
 
     def authorized(self, uid):
         return self.is_admin(uid) or uid in self.promoters

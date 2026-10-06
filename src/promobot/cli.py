@@ -111,6 +111,35 @@ async def network_check(crm, settings):
         raise ConfigurationError("Проверка подключения не пройдена; проверьте VPN/proxy, токен, CRM и webhook. Сообщения не отправлялись.")
 
 
+async def branch_check(crm, settings):
+    """Check account access and dictionaries without contacts or any write operation."""
+    report, ok = {'read_only': True, 'branches': {}}, True
+    for key, b in settings.all_branches.items():
+        view = crm.for_branch(key)
+        try:
+            sources = await view.index(view.path('lead-source/index'))
+            pipelines = await view.index(view.path('pipeline/index'))
+            # The response is inspected locally, never printed: it may contain contacts.
+            sample = await view.call(view.path('customer/index'), {'page': 0, 'is_study': 2, 'removed': 1})
+            records = sample.get('items')
+            if not isinstance(records, list):
+                raise CRMError('invalid_customer_response')
+            checks = {'name': b['name'], 'crm_id': b['crm_id'],
+                      'pipeline_visible': any(x['id'] == b['pipeline_id'] for x in pipelines),
+                      'source_visible': any(x['id'] == b['source_id'] for x in sources),
+                      'customer_api_accessible': True,
+                      'request_field_visible': any(b['request_field'] in x for x in records) if records else None}
+            if not checks['pipeline_visible'] or not checks['source_visible'] or checks['request_field_visible'] is False:
+                ok = False
+            report['branches'][key] = checks
+        except CRMError as exc:
+            report['branches'][key] = {'name': b['name'], 'error': exc.code}
+            ok = False
+    print(json.dumps(report, ensure_ascii=False))
+    if not ok:
+        raise ConfigurationError('Доступ или настройки одного из филиалов не подтверждены. Записей CRM не было.')
+
+
 async def async_main(args):
     load_dotenv(args.env, override=False)
     s = Settings.load()
@@ -123,6 +152,8 @@ async def async_main(args):
         crm = AlfaCRM(s, mock.client() if mock else None)
         if args.command == "bootstrap":
             await bootstrap(crm, s)
+        elif args.command == "branch-check":
+            await branch_check(crm, s)
         elif args.command == "network-check":
             await network_check(crm, s)
         elif args.command == "doctor":
@@ -172,7 +203,7 @@ async def async_main(args):
             # aiogram validates token format; numeric prefix is enough to lock before networking.
             bot_id = str(bot.id)
             with ProcessLock(s.database.with_suffix(".lock")), ProcessLock(Path("/tmp") / f"promobot-{os.getuid()}" / f"bot-{bot_id}.lock"):
-                await db.bind(s.environment, bot_id, s.branch, s.mode, s.crm_url)
+                await db.bind(s.environment, bot_id, s.branch, s.mode, s.crm_url, s.all_branches)
                 worker = Worker(db, s, crm)
                 runtime = Runtime(db, s, bot, Dialog(db, s, bot_id), worker)
                 runner = asyncio.create_task(runtime.run())
@@ -203,7 +234,7 @@ def main():
     p = argparse.ArgumentParser(description="Промобот Айтишкино")
     p.add_argument("--env", default=".env.test", help="Путь к защищённому env-файлу")
     sub = p.add_subparsers(dest="command", required=True)
-    for command in ("run", "bootstrap", "backup", "outbox-retry", "network-check"):
+    for command in ("run", "bootstrap", "backup", "outbox-retry", "network-check", "branch-check"):
         sub.add_parser(command)
     server = sub.add_parser("mock-server")
     server.add_argument("--port", type=int, default=8081)

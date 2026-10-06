@@ -55,8 +55,10 @@ async def app(tmp_path):
         d = ds[0]
         d["data"] = json.loads(d["data"])
         return d
-    async def intake(uid=10002, parent="Анна", kids=(("Алиса", "9"),), telephone="8 (999) 123-45-67", telegram=None, comment="Алису очень заинтересовала робототехника", confirm=True):
+    async def intake(uid=10002, parent="Анна", kids=(("Алиса", "9"),), telephone="8 (999) 123-45-67", telegram=None, comment="Алису очень заинтересовала робототехника", confirm=True, branch=None):
         await event(action="menu:new", uid=uid)
+        if (await draft(uid))['step'] == 'branch':
+            await event(action='branch.' + (branch or s.branch['key']), uid=uid)
         await event(parent, uid=uid)
         await event(action="phone" if telephone else "username", uid=uid)
         await event(telephone or telegram, uid=uid)

@@ -1,7 +1,7 @@
 import json
 import uuid
 from datetime import datetime, timezone, timedelta
-from .domain import InputError, age, clean, family, name, now, phone, review, title, username
+from .domain import InputError, age, clean, family, name, now, phone, review, title, username, telegram_chunks
 from .storage import dumps, enqueue, one, rows
 from .members import Members
 
@@ -29,10 +29,18 @@ class Dialog:
         if has_draft:
             result.append([("Продолжить анкету", "menu:continue")])
         result += [[("Мои заявки", "menu:mine")], [("Помощь", "menu:help")]]
+        if len(self.s.all_branches) > 1:
+            result.insert(1, [('🏫 Выбрать филиал', 'menu:branches')])
         if admin:
-            result.append([("Промоутеры", "admin:list")])
-            result.append([("Проблемные заявки", "menu:problems")])
+            result.append([("⚙️ Админское меню", "admin:home")])
         return result
+
+    def branch(self, draft):
+        return self.s.for_branch(draft['branch_key']).branch
+
+    async def selected_branch(self, c, uid):
+        selected = await one(c, 'SELECT branch_key FROM user_branches WHERE bot_id=? AND user_id=?', (self.bot_id, uid))
+        return selected['branch_key'] if selected and selected['branch_key'] in self.s.all_branches else self.s.branch['key']
 
     def buttons(self, d, options):
         buttons = [[(label, f'd:{d["id"]}:{d["version"]}:{action}')] for label, action in options]
@@ -45,6 +53,7 @@ class Dialog:
         data, step = d["data"], d["step"]
         options = []
         prompts = {
+            'branch': '🏫 В какой филиал отправить эту заявку?',
             "parent": "Имя родителя (до 50 символов):", "phone": "Введите телефон с кодом страны:",
             "username": "Введите @username или ссылку t.me:", "child_name": "Имя ребёнка:",
             "child_age": "Возраст ребёнка, полных лет:", "comment": "Введите один комментарий для всей семьи:",
@@ -54,41 +63,50 @@ class Dialog:
             "preference": "Как связаться?", "children": "Добавить ещё ребёнка?",
             "comment_choice": "Добавить комментарий?", "edit": "Выберите, что исправить:",
             "replace": "Уже есть черновик. Продолжить или начать заново?"}
-        if step == "contact_type":
+        if step == 'branch':
+            options = [(('✅ ' if k == d['branch_key'] else '🏫 ') + b['name'], 'branch.' + k) for k, b in self.s.all_branches.items()]
+        elif step == "contact_type":
             options = [("Телефон", "phone"), ("Telegram @username", "username")]
         elif step == "extra":
-            options = [("Добавить телефон", "phone"), ("Добавить Telegram", "username"), ("Дальше", "next")]
+            options = [(("✅ Телефон добавлен — добавить ещё" if data.get('phones') else "Добавить телефон"), "phone"),
+                       (("✅ Telegram добавлен — добавить ещё" if data.get('usernames') else "Добавить Telegram"), "username"), ("Дальше", "next")]
         elif step == "messengers":
-            options = [(('✓ ' if m in data.get("messengers", []) else '') + m, f'msg{n}') for n, m in enumerate(MESSENGERS)]
+            options = [(('✅ ' if m in data.get("messengers", []) else '') + m, f'msg{n}') for n, m in enumerate(MESSENGERS)]
             options += [("Только телефон / не указано", "none"), ("Дальше", "next")]
         elif step == "preference":
             options = [(p, f'pref{n}') for n, p in enumerate(PREFERENCES) if data.get("phones") or n in {0, 3}]
         elif step == "child_age":
             options = [("Не уточнили", "unknown")]
         elif step == "children":
-            options = [("Добавить ребёнка", "addchild"), ("Дальше", "next")]
+            options = [(f"👧 Добавить ребёнка — уже {len(data['children'])}", "addchild"), ("Дальше", "next")]
         elif step == "comment_choice":
             options = [("Добавить комментарий", "comment"), ("Без комментария", "skip")]
         elif step == "review":
-            return review(data, self.s.branch), self.buttons(d, [("Отправить в CRM", "confirm"), ("Исправить", "edit")])
+            return review(data, self.branch(d)), self.buttons(d, [("Отправить в CRM", "confirm"), ("Исправить", "edit")])
         elif step == "edit":
-            options = [("Имя родителя", "eparent"), ("Контакты (ввести заново)", "econtacts"),
+            options = [("👤 Родитель: " + data.get("parent", ""), "eparent"), ("Контакты (ввести заново)", "econtacts"),
                        ("Способы связи", "emessengers"), ("Предпочтение связи", "epreference"),
-                       ("Добавить ребёнка", "eadd"), ("Комментарий", "ecomment"),
+                       ("Добавить ребёнка", "eadd"), ("✅ Комментарий" if data.get("comment") else "📝 Комментарий", "ecomment"),
                        ("Удалить комментарий", "delcomment"), ("Заголовок", "etitle"), ("К проверке", "review")]
+            if len(self.s.all_branches) > 1:
+                options.insert(0, ('🏫 Филиал: ' + self.branch(d)['name'], 'ebranch'))
             for n, child in enumerate(data["children"]):
                 options += [(f'{n+1}. Исправить имя', f'ename{n}'), (f'{n+1}. Исправить возраст', f'eage{n}')]
                 if len(data["children"]) > 1:
                     options.append((f'{n+1}. Удалить ребёнка', f'delchild{n}'))
         elif step == "replace":
             options = [("Продолжить", "resume"), ("Начать заново", "restart")]
-        return prompts.get(step, "Продолжите анкету"), self.buttons(d, options)
+        prompt = prompts.get(step, "Продолжите анкету")
+        if step != 'branch':
+            prompt = '🏫 ' + self.branch(d)['name'] + '\n' + prompt
+        return prompt, self.buttons(d, options)
 
     async def new(self, c, uid, chat):
         stamp = now()
         ident = uuid.uuid4().hex[:12]
-        await c.execute("INSERT INTO drafts(id,bot_id,user_id,chat_id,branch_key,crm_branch_id,step,version,data,history,created_at,updated_at) VALUES(?,?,?,?,?,?,'parent',1,?,'[]',?,?)",
-                        (ident, self.bot_id, uid, chat, self.s.branch["key"], self.s.branch["crm_id"],
+        b = self.s.for_branch(await self.selected_branch(c, uid)).branch
+        await c.execute("INSERT INTO drafts(id,bot_id,user_id,chat_id,branch_key,crm_branch_id,step,version,data,history,created_at,updated_at) VALUES(?,?,?,?,?,?,?,1,?,'[]',?,?)",
+                        (ident, self.bot_id, uid, chat, b['key'], b['crm_id'], 'branch' if len(self.s.all_branches) > 1 else 'parent',
                          dumps({"children": [], "phones": [], "usernames": [], "messengers": []}), stamp, stamp))
         return await self.draft(c, uid, chat)
 
@@ -99,9 +117,20 @@ class Dialog:
         return d
 
     async def save(self, c, d):
-        await c.execute("UPDATE drafts SET step=?,version=?,data=?,history=?,paused=?,updated_at=?,first_message_at=?,first_received_at=? WHERE id=? AND active=1",
+        await c.execute("UPDATE drafts SET step=?,version=?,data=?,history=?,paused=?,updated_at=?,first_message_at=?,first_received_at=?,branch_key=?,crm_branch_id=? WHERE id=? AND active=1",
                         (d["step"], d["version"], dumps(d["data"]), dumps(d["history"]), d["paused"],
-                         now(), d["first_message_at"], d["first_received_at"], d["id"]))
+                         now(), d["first_message_at"], d["first_received_at"], d['branch_key'], d['crm_branch_id'], d["id"]))
+
+    @staticmethod
+    def page_screen(screen, page):
+        pages = json.loads(screen['pages'])
+        buttons = json.loads(screen['keyboard'] or 'null') or []
+        navigation = []
+        if page:
+            navigation.append(('⬅️ Предыдущая страница', f'page:{screen["token"]}:{page-1}'))
+        if page + 1 < len(pages):
+            navigation.append(('➡️ Следующая страница', f'page:{screen["token"]}:{page+1}'))
+        return f'📄 {page+1}/{len(pages)}\n' + pages[page], ([navigation] if navigation else []) + buttons
 
     async def process(self, update_id):
         # No external I/O in this transaction. All responses are durable intents.
@@ -118,7 +147,15 @@ class Dialog:
             key = f'in:{self.bot_id}:{update_id}'
             async def reply(value, keyboard=None):
                 # Plain text mode. No HTML interpretation in Telegram.
-                await enqueue(c, key + ":reply", chat, value, keyboard)
+                active = await one(c, 'SELECT branch_key FROM drafts WHERE bot_id=? AND user_id=? AND active=1', (self.bot_id, uid))
+                branch = active['branch_key'] if active else await self.selected_branch(c, uid)
+                await c.execute('DELETE FROM ui_screens WHERE bot_id=? AND chat_id=?', (self.bot_id, chat))
+                pages = telegram_chunks(value)
+                if len(pages) > 1:
+                    screen = {'pages': dumps(pages), 'keyboard': dumps(keyboard), 'token': uuid.uuid4().hex[:12]}
+                    await c.execute('INSERT INTO ui_screens VALUES(?,?,?,?,?,?)', (self.bot_id, chat, screen['token'], screen['pages'], screen['keyboard'], branch))
+                    value, keyboard = self.page_screen(screen, 0)
+                await enqueue(c, key + ":reply", chat, value, keyboard, kind='ui', bot_id=self.bot_id, branch_key=branch)
             if q:
                 await enqueue(c, key + ":ack", chat, q["id"], kind="ack")
             private = message.get("chat", {}).get("type") == "private"
@@ -155,9 +192,28 @@ class Dialog:
                     await self.admin_request(c, uid, text, reply)
                 elif text == "/problems":
                     await self.problems(c, uid, reply)
+                elif action.startswith('page:'):
+                    parts = action.split(':')
+                    screen = await one(c, 'SELECT * FROM ui_screens WHERE bot_id=? AND chat_id=?', (self.bot_id, chat))
+                    if len(parts) == 3 and screen and parts[1] == screen['token'] and parts[2].isdigit() and 0 <= int(parts[2]) < len(json.loads(screen['pages'])):
+                        value, buttons = self.page_screen(screen, int(parts[2]))
+                        await enqueue(c, key + ':reply', chat, value, buttons, kind='ui', bot_id=self.bot_id, branch_key=screen['branch_key'])
+                    else:
+                        await reply('Эта страница устарела. Откройте текущую анкету через /start.', self.menu(bool(d), await self.members.is_admin(c, uid)))
+                elif action.startswith('branch:select:'):
+                    chosen = action.split(':')[2]
+                    if chosen not in self.s.all_branches:
+                        await reply('Филиал недоступен.', self.menu(bool(d), await self.members.is_admin(c, uid)))
+                    else:
+                        await c.execute('INSERT OR REPLACE INTO user_branches VALUES(?,?,?)', (self.bot_id, uid, chosen))
+                        await reply('✅ Выбран ' + self.s.all_branches[chosen]['name'] + '. Выбор применяется к новым заявкам. Филиал черновика можно изменить перед отправкой.',
+                                    self.menu(bool(d), await self.members.is_admin(c, uid)))
                 elif action.startswith("menu:"):
                     command = action.split(":")[1]
-                    if command == "new":
+                    if command == 'branches':
+                        selected = await self.selected_branch(c, uid)
+                        await reply('🏫 Выберите филиал для новых заявок:', [[(('✅ ' if k == selected else '🏫 ') + b['name'], 'branch:select:' + k)] for k, b in self.s.all_branches.items()] + [[('🏠 Главное меню', 'menu:home')]])
+                    elif command == "new":
                         if d:
                             d["data"]["resume_step"] = d["data"].get("resume_step", d["step"])
                             d["step"], d["paused"] = "replace", 0
@@ -176,10 +232,10 @@ class Dialog:
                         value, keyboard = self.screen(d)
                         await reply(("Черновик старше суток. Проверьте актуальность ответов.\n" if stale else "") + value, keyboard)
                     elif command == "mine":
-                        found = await rows(c, "SELECT id,state FROM requests WHERE bot_id=? AND user_id=? ORDER BY saved_at DESC LIMIT 10", (self.bot_id, uid))
-                        await reply("\n".join(f'{r["id"]}: {LABELS.get(r["state"], r["state"])}' for r in found) or "Заявок пока нет", self.menu(bool(d), self.s.is_admin(uid)))
+                        found = await rows(c, "SELECT id,state,branch_key FROM requests WHERE bot_id=? AND user_id=? ORDER BY saved_at DESC LIMIT 10", (self.bot_id, uid))
+                        await reply("\n".join(f'{self.s.all_branches.get(r["branch_key"], {}).get("name", r["branch_key"])}: {LABELS.get(r["state"], r["state"])} — {r["id"]}' for r in found) or "Заявок пока нет", self.menu(bool(d), await self.members.is_admin(c, uid)))
                     elif command == "help":
-                        await reply(HELP, self.menu(bool(d), self.s.is_admin(uid)))
+                        await reply(HELP, self.menu(bool(d), await self.members.is_admin(c, uid)))
                     elif command == "problems":
                         await self.problems(c, uid, reply)
                     else:
@@ -187,7 +243,8 @@ class Dialog:
                             d["paused"] = 1
                             d["version"] += 1
                             await self.save(c, d)
-                        await reply("Главное меню. Черновик сохранён." if d else "Главное меню", self.menu(bool(d), self.s.is_admin(uid)))
+                        chosen = self.s.all_branches[await self.selected_branch(c, uid)]['name']
+                        await reply('🏫 ' + chosen + '\n' + ("Главное меню. Черновик сохранён." if d else "Главное меню"), self.menu(bool(d), await self.members.is_admin(c, uid)))
                 else:
                     valid = True
                     if q:
@@ -197,7 +254,7 @@ class Dialog:
                     if not valid:
                         await reply("Эта кнопка устарела или принадлежит другой анкете. Откройте /start.")
                     elif not d or d["paused"]:
-                        await reply("Откройте /start и продолжите черновик или создайте новый контакт", self.menu(bool(d), self.s.is_admin(uid)))
+                        await reply("Откройте /start и продолжите черновик или создайте новый контакт", self.menu(bool(d), await self.members.is_admin(c, uid)))
                     elif stale and action not in {"cancel", "back", "resume", "restart"}:
                         if d["step"] != "replace":
                             d["data"]["resume_step"] = d["step"]
@@ -208,7 +265,7 @@ class Dialog:
                         await reply("Черновик старше суток. Проверьте актуальность ответов.\n" + value, buttons)
                     elif action == "cancel":
                         await c.execute("UPDATE drafts SET active=0,step='cancelled',version=version+1 WHERE id=?", (d["id"],))
-                        await reply("Анкета отменена", self.menu(False, self.s.is_admin(uid)))
+                        await reply("Анкета отменена", self.menu(False, await self.members.is_admin(c, uid)))
                     elif action == "restart" and d["step"] == "replace":
                         await c.execute("UPDATE drafts SET active=0,step='cancelled' WHERE id=?", (d["id"],))
                         d = await self.new(c, uid, chat)
@@ -225,6 +282,8 @@ class Dialog:
                                 proposed["first_received_at"] = event["received_at"]
                             proposed["version"] += 1
                             await self.save(c, proposed)
+                            if proposed['branch_key'] != d['branch_key'] and d['step'] == 'branch' and not d['data'].get('editing'):
+                                await c.execute('INSERT OR REPLACE INTO user_branches VALUES(?,?,?)', (self.bot_id, uid, proposed['branch_key']))
                             await reply(*self.screen(proposed))
                         except InputError as exc:
                             question, buttons = self.screen(d)
@@ -237,8 +296,10 @@ class Dialog:
             if d["history"]:
                 old = d["history"].pop()
                 d["step"], d["data"] = old["step"], old["data"]
+                d['branch_key'] = old.get('branch_key', d['branch_key'])
+                d['crm_branch_id'] = old.get('crm_branch_id', d['crm_branch_id'])
             return
-        d["history"].append({"step": step, "data": json.loads(dumps(data))})
+        d["history"].append({"step": step, "data": json.loads(dumps(data)), 'branch_key': d['branch_key'], 'crm_branch_id': d['crm_branch_id']})
         def finish(next_step):
             if data.pop("editing", False):
                 d["step"] = "review"
@@ -251,6 +312,13 @@ class Dialog:
         if step == "replace" and action == "resume":
             d["step"] = data.pop("resume_step", "parent")
             data.pop("_stale", None)
+        elif step == 'branch':
+            key = action.removeprefix('branch.')
+            if not action.startswith('branch.') or key not in self.s.all_branches:
+                raise InputError('Выберите филиал кнопкой.')
+            b = self.s.all_branches[key]
+            d['branch_key'], d['crm_branch_id'] = key, b['crm_id']
+            finish('parent')
         elif step == "parent":
             data["parent"] = name(text, 50)
             finish("contact_type")
@@ -339,7 +407,7 @@ class Dialog:
             d["step"] = "edit"
         elif step == "edit":
             fields = {"eparent": "parent", "econtacts": "contact_type", "emessengers": "messengers",
-                      "epreference": "preference", "ecomment": "comment", "etitle": "title", "eadd": "child_name"}
+                      "epreference": "preference", "ecomment": "comment", "etitle": "title", "eadd": "child_name", 'ebranch': 'branch'}
             if action in fields:
                 data["editing"] = True
                 d["step"] = fields[action]
@@ -382,23 +450,24 @@ class Dialog:
         data = d["data"]
         if not data["children"] or not (data.get("phones") or data.get("usernames")):
             raise InputError("Неполная анкета")
-        data["crm_settings"] = {k: self.s.branch.get(k) for k in ("key", "crm_id", "pipeline_id", "status_id", "source_id", "request_field", "technical_user_id", "initial_unassigned")}
-        ident = f'{self.s.environment}-{self.bot_id}-{self.s.branch["key"]}-{uuid.uuid4().hex}'
+        branch = self.branch(d)
+        data["crm_settings"] = {k: branch.get(k) for k in ("key", "crm_id", "pipeline_id", "status_id", "source_id", "request_field", "technical_user_id", "initial_unassigned")}
+        ident = f'{self.s.environment}-{self.bot_id}-{d["branch_key"]}-{uuid.uuid4().hex}'
         stamp = now()
         await c.execute("INSERT INTO requests(id,draft_id,bot_id,user_id,chat_id,branch_key,crm_branch_id,data,state,confirmed_at,saved_at) VALUES(?,?,?,?,?,?,?,?,'queued',?,?)",
                         (ident, d["id"], self.bot_id, d["user_id"], d["chat_id"], d["branch_key"], d["crm_branch_id"], dumps(data), stamp, now()))
         await c.execute("INSERT INTO jobs(request_id) VALUES(?)", (ident,))
         await c.execute("UPDATE drafts SET active=0,step='submitted',version=version+1 WHERE id=?", (d["id"],))
-        await reply(f"Заявка сохранена: {ident}. Доставка в CRM в очереди.", self.menu(False, self.s.is_admin(d["user_id"])))
+        await reply(f"Заявка сохранена: {ident}. Доставка в CRM в очереди.", self.menu(False, await self.members.is_admin(c, d["user_id"])))
 
     async def problems(self, c, uid, reply):
-        if not self.s.is_admin(uid):
+        if not await self.members.is_admin(c, uid):
             return await reply("Только для администратора")
         found = await rows(c, "SELECT id,state,error FROM requests WHERE state IN ('manual_review','duplicate_review','failed','retry_wait') ORDER BY saved_at DESC LIMIT 20")
         await reply("\n".join(f'{r["id"]}: {LABELS[r["state"]]} ({r["error"] or "совпадение"})' for r in found) or "Проблемных заявок нет")
 
     async def admin_request(self, c, uid, text, reply):
-        if not self.s.is_admin(uid):
+        if not await self.members.is_admin(c, uid):
             return await reply("Только для администратора")
         command, ident = text.split(maxsplit=1)
         r = await one(c, "SELECT * FROM requests WHERE id=?", (ident,))
@@ -413,7 +482,7 @@ class Dialog:
             await c.execute("UPDATE jobs SET state='pending',attempts=0,next_at=0,error=NULL WHERE request_id=? AND state!='processing'", (ident,))
             await c.execute("UPDATE requests SET state='queued',error=NULL WHERE id=?", (ident,))
             return await reply("Повторная проверка запланирована. Неопределённую запись сначала сверим.")
-        value = review(json.loads(r["data"]), self.s.branch)
+        value = review(json.loads(r["data"]), self.s.for_branch(r["branch_key"]).branch)
         matches = json.loads(r["matches"] or "[]")
         links = ", ".join(str(x) for x in matches)
         await reply(f'{r["id"]}\n{LABELS.get(r["state"], r["state"])}\n{value}\nCRM ID: {r["crm_id"]}\nСовпадения: {links or "нет"}\nОшибка: {r["error"] or "нет"}')

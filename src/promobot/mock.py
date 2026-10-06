@@ -23,32 +23,40 @@ class MockCRM:
             return httpx.Response(401)
         kind, operation = url.path.strip("/").split("/")[-2:]
         query = parse_qs(url.query)
+        parts = url.path.strip('/').split('/')
+        branch_id = int(parts[1]) if len(parts) == 4 else self.s.branch['crm_id']
+        branch = next((b for b in self.s.all_branches.values() if b['crm_id'] == branch_id), None)
+        if branch is None:
+            return httpx.Response(404)
+
         async with self.store.tx() as c:
             found = [json.loads(r["body"]) for r in await rows(c, "SELECT body FROM mock_models WHERE kind=? ORDER BY id", (kind,))]
             if operation == "create":
                 ident = max([r["id"] for r in found] + [0]) + 1
                 model = {**body, "id": ident}
-                if kind == "customer" and self.s.branch.get("initial_unassigned"):
+                if kind == "customer" and branch.get("initial_unassigned"):
                     model.setdefault("lead_status_id", None)
                 if kind == "communication":
-                    model.update(related_id=int(query["related_id"][0]), branch_id=self.s.branch["crm_id"],
-                                 user_id=self.s.branch.get("technical_user_id") or 990, **{"class": "Customer"})
+                    model.update(related_id=int(query["related_id"][0]), branch_id=branch["crm_id"],
+                                 user_id=branch.get("technical_user_id") or 990, **{"class": "Customer"})
                 await c.execute("INSERT INTO mock_models VALUES(?,?,?)", (kind, ident, dumps(model)))
                 return httpx.Response(200, json={"success": True, "errors": [], "model": model})
             if operation != "index":
                 return httpx.Response(404)
             if kind == "branch":
-                found = [{"id": self.s.branch["crm_id"], "name": self.s.branch["name"]}]
+                found = [{"id": b["crm_id"], "name": b["name"]} for b in self.s.all_branches.values()]
             elif kind == "lead-status":
-                found = [{"id": self.s.branch["status_id"], "name": self.s.branch["status_name"], "pipeline_id": self.s.branch["pipeline_id"]}]
+                found = [{"id": branch["status_id"], "name": branch["status_name"], "pipeline_id": branch["pipeline_id"]}]
             elif kind == "lead-source":
-                found = [{"id": self.s.branch["source_id"], "name": self.s.branch["source_name"]}]
+                found = [{"id": branch["source_id"], "name": branch["source_name"]}]
             elif kind == "pipeline":
-                found = [{"id": self.s.branch["pipeline_id"], "name": self.s.branch["pipeline_name"]}]
+                found = [{"id": branch["pipeline_id"], "name": branch["pipeline_name"]}]
+            if kind == 'customer':
+                found = [r for r in found if branch_id in r.get('branch_ids', [])]
             if "id" in body:
                 found = [r for r in found if r["id"] == body["id"]]
             if kind == "communication":
-                found = [r for r in found if r["related_id"] == int(query["related_id"][0])]
+                found = [r for r in found if r["related_id"] == int(query["related_id"][0]) and r["branch_id"] == branch_id]
             page = body.get("page", 0)
             items = found[page*50:(page+1)*50]
             return httpx.Response(200, json={"items": items, "total": len(found), "count": len(items), "page": page})

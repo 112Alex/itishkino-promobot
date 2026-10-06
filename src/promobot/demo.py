@@ -31,6 +31,8 @@ async def questionnaire(db, settings, bot_id):
     drafts = await db.query("SELECT step FROM drafts WHERE bot_id=? AND user_id=? AND active=1", (bot_id, uid))
     if drafts[0]["step"] == "replace":
         raise ConfigurationError("Для приёмки нужна БД без активного черновика владельца")
+    if drafts[0]["step"] == "branch":
+        await send(action="branch." + settings.branch["key"])
     await send("Тест промобота")
     await send(action="username")
     await send("@promo_test_" + uuid.uuid4().hex[:16])
@@ -53,7 +55,7 @@ async def acceptance(db, settings, crm, allow_real=False):
     if await db.query("SELECT id FROM requests WHERE state NOT IN ('delivered','duplicate_review') LIMIT 1"):
         raise ConfigurationError("Для приёмки используйте отдельную БД без незавершённых задач")
     bot_id = str(settings.token.split(":")[0]) if settings.token else "demo"
-    await db.bind(settings.environment, bot_id, settings.branch, settings.mode, settings.crm_url)
+    await db.bind(settings.environment, bot_id, settings.branch, settings.mode, settings.crm_url, settings.all_branches)
     ident = await questionnaire(db, settings, bot_id)
     worker = Worker(db, settings, crm)
     await worker.recover()

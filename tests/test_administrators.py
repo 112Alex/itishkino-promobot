@@ -4,7 +4,7 @@ from promobot.config import ConfigurationError
 
 
 async def reply(app):
-    row = (await app.db.query("SELECT payload FROM outbox WHERE kind='send' ORDER BY id DESC LIMIT 1"))[0]
+    row = (await app.db.query("SELECT payload FROM outbox WHERE kind IN ('send','ui') ORDER BY id DESC LIMIT 1"))[0]
     return json.loads(row['payload'])
 
 
@@ -14,7 +14,7 @@ async def test_branch_admin_can_read_and_retry_but_not_override_duplicate(app):
     r = await app.intake()
     await app.event('/start', uid=10005)
     buttons = (await reply(app))['keyboard']
-    assert any(a == 'menu:problems' for row in buttons for _, a in row)
+    assert any(a == 'admin:home' for row in buttons for _, a in row)
     await app.event('/request ' + r['id'], uid=10005)
     assert 'Анна' in (await reply(app))['text']
     await app.db.execute("UPDATE requests SET state='manual_review'")

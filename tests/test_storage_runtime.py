@@ -210,9 +210,9 @@ async def test_real_aiogram_updates_preserve_admin_identity(app):
     assert [x['user_id'] for x in stored]==[app.s.admin,app.s.admin]
     await app.dialog.process(800)
     await app.dialog.process(801)
-    responses=await app.db.query("SELECT payload FROM outbox WHERE kind='send' ORDER BY id")
+    responses=await app.db.query("SELECT payload FROM outbox WHERE kind IN ('send','ui') ORDER BY id")
     assert 'Добавить лида' in responses[0]['payload']
-    assert 'Промоутеры' in responses[0]['payload']
+    assert 'Админское меню' in responses[0]['payload']
     assert 'Промоутеры' in responses[1]['payload']
     assert 'Доступ не разрешён' not in str(responses)
     users=await app.db.query('SELECT user_id,username FROM telegram_users')

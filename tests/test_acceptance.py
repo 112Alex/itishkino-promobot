@@ -89,7 +89,7 @@ async def test_migration_pre_backup_keeps_existing_draft(tmp_path):
                        "INSERT INTO schema_migrations VALUES(1);INSERT INTO metadata VALUES('kept','value');")
     db = await Store(path).open()
     assert await db.query("SELECT value FROM metadata WHERE key='kept'") == [{"value": "value"}]
-    assert len(await db.query("SELECT * FROM schema_migrations")) == 4
+    assert len(await db.query("SELECT * FROM schema_migrations")) == 5
     assert (tmp_path / "before-migration-2.sqlite3").exists()
     with sqlite3.connect(tmp_path / "before-migration-2.sqlite3") as c:
         assert c.execute("SELECT version FROM schema_migrations").fetchall() == [(1,)]
@@ -104,7 +104,9 @@ async def test_inbox_keeps_only_needed_fields(app):
          "photo": [{"file_id": "private-media-id"}], "forward_origin": {"private": True}}}
     await app.db.ingest("42", [u])
     payload = (await app.db.query("SELECT payload FROM inbox"))[0]["payload"]
-    assert "private name" not in payload and "file_id" not in payload
+    assert "file_id" not in payload and "forward_origin" not in payload
+    assert json.loads(payload)["message"]["from"]["first_name"] == "private name"
+    assert "first_name" not in json.loads(payload)["message"]["chat"]
     assert json.loads(payload)["message"]["from"]["username"] == "private_username"
     await app.dialog.process(99)
     assert (await app.db.query("SELECT state FROM inbox"))[0]["state"] == "done"

@@ -211,16 +211,16 @@ async def test_unauthorized_id_group_and_private_history(app):
     await app.event("/new", uid=9999)
     assert not await app.draft(9999)
     await app.event("/id", uid=9999)
-    payload = json.loads((await app.db.query("SELECT payload FROM outbox WHERE kind='send' ORDER BY id DESC LIMIT 1"))[0]["payload"])
+    payload = json.loads((await app.db.query("SELECT payload FROM outbox WHERE kind IN ('send','ui') ORDER BY id DESC LIMIT 1"))[0]["payload"])
     assert payload["text"] == "Ваш Telegram ID: 9999"
     await app.event("/new", uid=10003, chat_type="group")
     assert not await app.draft(10003)
     ident = (await app.db.query("SELECT id FROM requests"))[0]["id"]
     await app.event("/request " + ident, uid=10003)
-    response = json.loads((await app.db.query("SELECT payload FROM outbox WHERE kind='send' ORDER BY id DESC LIMIT 1"))[0]["payload"])
+    response = json.loads((await app.db.query("SELECT payload FROM outbox WHERE kind IN ('send','ui') ORDER BY id DESC LIMIT 1"))[0]["payload"])
     assert response["text"] == "Только для администратора"
     await app.event(action="menu:mine", uid=10003)
-    response = json.loads((await app.db.query("SELECT payload FROM outbox WHERE kind='send' ORDER BY id DESC LIMIT 1"))[0]["payload"])
+    response = json.loads((await app.db.query("SELECT payload FROM outbox WHERE kind IN ('send','ui') ORDER BY id DESC LIMIT 1"))[0]["payload"])
     assert response["text"] == "Заявок пока нет"
 
 

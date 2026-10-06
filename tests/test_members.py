@@ -6,7 +6,7 @@ from promobot.telegram import Runtime
 
 
 async def latest(app):
-    r = (await app.db.query("SELECT payload FROM outbox WHERE kind='send' ORDER BY id DESC LIMIT 1"))[0]
+    r = (await app.db.query("SELECT payload FROM outbox WHERE kind IN ('send','ui') ORDER BY id DESC LIMIT 1"))[0]
     return json.loads(r['payload'])
 
 
@@ -15,7 +15,7 @@ async def test_each_admin_can_grant_numeric_id_and_revoke(app, admin):
     app.s.administrators = {10005:'preobrazhenka',10006:'preobrazhenka'}
     app.s.promoters.clear()
     await app.event('/start',uid=admin)
-    assert any(a == 'admin:list' for row in (await latest(app))['keyboard'] for _,a in row)
+    assert any(a == 'admin:home' for row in (await latest(app))['keyboard'] for _,a in row)
     await app.event(callback='admin:add',uid=admin)
     await app.event('20001',uid=admin)
     await app.event('/new',uid=20001)
@@ -129,11 +129,13 @@ async def test_promoters_list_pages_are_bounded(app):
         for uid in range(20001,20042): await app.dialog.members.grant(c,uid,app.s.admin)
     await app.event('/promoters',uid=app.s.admin)
     p=await latest(app)
-    assert '20001' in p['text'] and '20041' not in p['text']
+    assert '20001' not in p['text'] and '20041' not in p['text']
+    assert any(a.startswith('admin:name:20001') for row in p['keyboard'] for _,a in row)
+    assert not any('20041' in a for row in p['keyboard'] for _,a in row)
     assert sum(len(row) for row in p['keyboard'])<100
     assert any(a=='admin:list:1' for row in p['keyboard'] for _,a in row)
     await app.event(callback='admin:list:2',uid=app.s.admin)
-    assert '20041' in (await latest(app))['text']
+    assert any(a == 'admin:name:20041' for row in (await latest(app))['keyboard'] for _,a in row)
 
 
 async def test_foreign_branch_invite_cannot_be_approved(app):

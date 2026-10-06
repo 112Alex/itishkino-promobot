@@ -13,6 +13,7 @@ from aiogram.exceptions import TelegramAPIError, TelegramForbiddenError, Telegra
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from .domain import now
 from .storage import dumps, enqueue, one
+from .access import administrators
 
 log = logging.getLogger("promobot")
 
@@ -20,7 +21,15 @@ log = logging.getLogger("promobot")
 def keyboard(value):
     if not value:
         return None
-    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=t, callback_data=a) for t, a in row] for row in value])
+    def label(text, action):
+        if text and ord(text[0]) > 0x2000:
+            return text
+        tag = action.rsplit(':', 1)[-1]
+        icons = {'new': '➕', 'continue': '▶️', 'mine': '📋', 'help': '❓', 'home': '🏠', 'back': '⬅️', 'cancel': '❌',
+                 'next': '➡️', 'confirm': '📤', 'edit': '✏️', 'phone': '📞', 'username': '💬', 'addchild': '👧',
+                 'comment': '📝', 'skip': '⏭️', 'unknown': '❔', 'list': '👥', 'add': '➕'}
+        return icons.get(tag, '🔹') + ' ' + text
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=label(t, a), callback_data=a) for t, a in row] for row in value])
 
 
 def make_bot(settings):
@@ -58,8 +67,9 @@ class Outbox:
         async with self.lock:
             async with self.db.tx() as c:
                 r = await one(c, """SELECT * FROM outbox WHERE state='pending' AND next_at<=?
-                    AND NOT EXISTS (SELECT 1 FROM outbox p WHERE p.chat_id=outbox.chat_id
+                    AND (kind='ack' OR NOT EXISTS (SELECT 1 FROM outbox p WHERE p.chat_id=outbox.chat_id AND p.kind!='ack'
                         AND p.id<outbox.id AND p.state IN ('pending','processing'))
+                    )
                     ORDER BY id LIMIT 1""", (time.time(),))
                 if not r:
                     return False
@@ -72,6 +82,29 @@ class Outbox:
             if r["kind"] == "ack":
                 await self.bot.answer_callback_query(p["text"])
                 mid = None
+            elif r['kind'] == 'ui':
+                anchors = await self.db.query('SELECT message_id FROM ui_messages WHERE bot_id=? AND chat_id=?', (p['bot_id'], r['chat_id']))
+                mid = anchors[0]['message_id'] if anchors else None
+                if mid:
+                    try:
+                        await self.bot.edit_message_text(p['text'], chat_id=r['chat_id'], message_id=mid,
+                                                        reply_markup=keyboard(p['keyboard']), parse_mode=None)
+                    except TelegramBadRequest as exc:
+                        error = exc.message.lower()
+                        if 'message is not modified' in error:
+                            pass
+                        elif 'message to edit not found' in error or "message can't be edited" in error or 'message identifier is not specified' in error:
+                            mid = None
+                        else:
+                            raise
+                if not mid:
+                    result = await self.bot.send_message(r['chat_id'], p['text'], reply_markup=keyboard(p['keyboard']), parse_mode=None)
+                    mid = result.message_id
+                async with self.db.tx() as c:
+                    await c.execute('INSERT OR REPLACE INTO ui_messages VALUES(?,?,?)', (p['bot_id'], r['chat_id'], mid))
+                    await c.execute("UPDATE outbox SET state='done',message_id=?,error=NULL,payload=NULL WHERE id=?", (mid, r['id']))
+                outcome = 'done'
+                return True
             else:
                 result = await self.bot.send_message(r["chat_id"], p["text"], reply_markup=keyboard(p["keyboard"]), parse_mode=None)
                 mid = result.message_id
@@ -94,10 +127,15 @@ class Outbox:
 
 
     async def alert(self, message, code):
-        if message['kind'] != 'send' or message['dedupe'].startswith('alert:'):
+        if message['kind'] not in ('send', 'ui') or message['dedupe'].startswith('alert:'):
             return
         async with self.db.tx() as c:
-            for admin in self.s.admin_ids:
+            payload = json.loads(message['payload'] or '{}')
+            branch = payload.get('branch_key')
+            if message.get('request_id'):
+                request = await one(c, 'SELECT branch_key FROM requests WHERE id=?', (message['request_id'],))
+                branch = request['branch_key'] if request else branch
+            for admin in await administrators(c, self.s, branch):
                 await enqueue(c, f'alert:outbox:{message["id"]}:{admin}', admin,
                               f'Не удалось доставить уведомление №{message["id"]}. Код: {code}. Очередь сохранена.')
 
@@ -133,7 +171,7 @@ class Runtime:
             await c.execute("INSERT OR REPLACE INTO metadata VALUES('telegram_network',?)", (state,))
             if state == "down" or old:
                 stamp = now()
-                for admin in self.s.admin_ids:
+                for admin in await administrators(c, self.s):
                     await enqueue(c, f'alert:network:{state}:{stamp}:{admin}', admin,
                                   "Связь с Telegram восстановлена" if state == "up" else "Связь с Telegram была недоступна. Сохранённая очередь не потеряна.")
 
@@ -154,7 +192,8 @@ class Runtime:
                 except (ValueError, KeyError, TypeError):
                     async with self.db.tx() as c:
                         await c.execute("UPDATE inbox SET state='failed',error='invalid_event' WHERE bot_id=? AND update_id=?", (self.dialog.bot_id, e["update_id"]))
-                        for admin in self.s.admin_ids:
+                        draft = await one(c, 'SELECT branch_key FROM drafts WHERE bot_id=? AND user_id=? AND active=1', (self.dialog.bot_id, e['user_id']))
+                        for admin in await administrators(c, self.s, draft['branch_key'] if draft else None):
                             await enqueue(c, f'alert:invalid:{self.dialog.bot_id}:{e["update_id"]}:{admin}', admin,
                                           "Входящее событие требует проверки. Код: invalid_event. Анкета сохранена.")
             # Each user contributes only their oldest event; the next batch follows commit.
@@ -199,7 +238,7 @@ class Runtime:
             # Deliver after restart, if SQLite remains writable. Bound crash-loop alerts.
             try:
                 async with self.db.tx() as c:
-                    for admin in self.s.admin_ids:
+                    for admin in await administrators(c, self.s):
                         await enqueue(c, f'alert:service:{int(time.time() // 3600)}:{admin}', admin,
                                       'Бот завершился с ошибкой service_failed. Проверьте журнал контейнера. Сохранённая очередь будет обработана после запуска.')
             except Exception:

@@ -74,13 +74,19 @@ class Store:
         async with self.tx() as c:
             await c.execute(sql, args)
 
-    async def bind(self, environment, bot_id, branch, mode="mock", crm_url="https://itishkino.s20.online"):
+    async def bind(self, environment, bot_id, branch, mode="mock", crm_url="https://itishkino.s20.online", branches=None):
         identity = dumps([environment, bot_id, branch["key"], branch.get("crm_id"), mode, crm_url])
         async with self.tx() as c:
             old = await one(c, "SELECT value FROM metadata WHERE key='identity'")
             if old and old["value"] != identity:
                 raise ValueError("Эта БД принадлежит другому окружению/боту/филиалу")
             await c.execute("INSERT OR IGNORE INTO metadata VALUES('identity',?)", (identity,))
+            for key, b in (branches or {branch['key']: branch}).items():
+                mapping = f'branch_binding:{key}'
+                old_mapping = await one(c, 'SELECT value FROM metadata WHERE key=?', (mapping,))
+                if old_mapping and int(old_mapping['value']) != b['crm_id']:
+                    raise ValueError('CRM ID существующего филиала изменён; проверьте конфигурацию')
+                await c.execute('INSERT OR IGNORE INTO metadata VALUES(?,?)', (mapping, str(b['crm_id'])))
 
     async def ingest(self, bot_id, updates):
         async with self.tx() as c:
@@ -89,7 +95,7 @@ class Store:
                 def message_fields(m):
                     return {k: m[k] for k in ("message_id", "date", "text") if k in m} | {
                         "chat": {k: m.get("chat", {})[k] for k in ("id", "type") if k in m.get("chat", {})},
-                        "from": {k: m.get("from", {})[k] for k in ("id", "username", "is_bot") if k in m.get("from", {})}}
+                        "from": {k: m.get("from", {})[k] for k in ("id", "username", "is_bot", "first_name", "last_name") if k in m.get("from", {})}}
                 original = u
                 u = {"update_id": original["update_id"]}
                 if "message" in original:
@@ -97,7 +103,7 @@ class Store:
                 elif "callback_query" in original:
                     q = original["callback_query"]
                     u["callback_query"] = {"id": q["id"], "data": q.get("data", ""),
-                        "from": {k: q.get("from", {})[k] for k in ("id", "username", "is_bot") if k in q.get("from", {})},
+                        "from": {k: q.get("from", {})[k] for k in ("id", "username", "is_bot", "first_name", "last_name") if k in q.get("from", {})},
                         "message": message_fields(q.get("message", {}))}
                 m = u.get("message") or u.get("callback_query", {}).get("message") or {}
                 uid = (u.get("callback_query", {}).get("from") or m.get("from") or {}).get("id", 0)
@@ -155,11 +161,11 @@ class Store:
             await self.conn.close()
 
 
-async def enqueue(c, dedupe, chat, text, keyboard=None, request_id=None, kind="send"):
+async def enqueue(c, dedupe, chat, text, keyboard=None, request_id=None, kind="send", bot_id=None, branch_key=None):
     if kind == "send" and len(text) > 3500:
         chunks = [text[i:i+3500] for i in range(0, len(text), 3500)]
         for i, chunk in enumerate(chunks):
             await enqueue(c, f"{dedupe}:part{i}", chat, chunk, keyboard if i == len(chunks)-1 else None, request_id, kind)
         return
     await c.execute("INSERT OR IGNORE INTO outbox(dedupe,chat_id,kind,payload,request_id,created_at) VALUES(?,?,?,?,?,?)",
-                    (dedupe, chat, kind, dumps({"text": text, "keyboard": keyboard}), request_id, now()))
+                    (dedupe, chat, kind, dumps({"text": text, "keyboard": keyboard, "bot_id": bot_id, "branch_key": branch_key}), request_id, now()))
