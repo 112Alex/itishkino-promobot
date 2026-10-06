@@ -67,7 +67,7 @@ class Outbox:
         async with self.lock:
             async with self.db.tx() as c:
                 r = await one(c, """SELECT * FROM outbox WHERE state='pending' AND next_at<=?
-                    AND (kind='ack' OR NOT EXISTS (SELECT 1 FROM outbox p WHERE p.chat_id=outbox.chat_id AND p.kind!='ack'
+                    AND (kind IN ('ack','delete') OR NOT EXISTS (SELECT 1 FROM outbox p WHERE p.chat_id=outbox.chat_id AND p.kind NOT IN ('ack','delete')
                         AND p.id<outbox.id AND p.state IN ('pending','processing'))
                     )
                     ORDER BY id LIMIT 1""", (time.time(),))
@@ -81,6 +81,13 @@ class Outbox:
             p = json.loads(r["payload"])
             if r["kind"] == "ack":
                 await self.bot.answer_callback_query(p["text"])
+                mid = None
+            elif r['kind'] == 'delete':
+                try:
+                    await self.bot.delete_message(chat_id=r['chat_id'], message_id=int(p['text']))
+                except TelegramBadRequest:
+                    # Already removed or too old: nothing to retry and no disruption of the menu.
+                    pass
                 mid = None
             elif r['kind'] == 'ui':
                 anchors = await self.db.query('SELECT message_id FROM ui_messages WHERE bot_id=? AND chat_id=?', (p['bot_id'], r['chat_id']))

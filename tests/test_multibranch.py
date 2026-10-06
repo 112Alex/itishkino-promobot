@@ -60,39 +60,32 @@ async def test_two_promoters_same_contact_separate_branches_and_comments(app):
         assert r['id'] not in comments[0]['comment']
 
 
-async def test_branch_preference_cannot_move_existing_draft_and_explicit_edit_can(app):
+async def test_branch_menu_changes_draft_preserves_answers_and_new_leads_skip_choice(app):
     franchise(app)
     await app.intake(branch='preobrazhenka', confirm=False)
     original = await app.draft()
     await app.event(callback='branch:select:kuzminki')
-    assert (await app.draft())['branch_key'] == 'preobrazhenka'
-    await app.event(action='edit')
-    await app.event(action='ebranch')
-    await app.event(action='branch.maryino')
     d = await app.draft()
-    assert d['branch_key'] == 'maryino' and d['crm_branch_id'] == 906 and d['step'] == 'review'
-    assert d['data']['parent'] == original['data']['parent']
-    assert d['data']['children'] == original['data']['children']
+    assert d['branch_key'] == 'kuzminki' and d['step'] == 'review'
+    assert d['data'] == original['data']
     await app.event(action='confirm')
     await app.worker.tick()
-    assert (await app.crm.for_branch('maryino').customers())[0]['branch_ids'] == [906]
-    assert not await app.crm.customers() and not await app.crm.for_branch('kuzminki').customers()
+    assert (await app.crm.for_branch('kuzminki').customers())[0]['branch_ids'] == [905]
     await app.event(action='menu:new')
     assert (await app.draft())['branch_key'] == 'kuzminki'
+    assert (await app.draft())['step'] == 'parent'
 
 
-async def test_branch_back_restores_branch_and_old_foreign_button_is_rejected(app):
+async def test_branch_menu_invalidation_and_back_cannot_restore_previous_branch(app):
     franchise(app)
-    await app.event(action='menu:new')
+    await app.intake(confirm=False)
     old = await app.draft()
-    await app.event(action='branch.kuzminki')
+    await app.event(callback='branch:select:zhulebino')
+    await app.event(callback=f'd:{old["id"]}:{old["version"]}:confirm')
+    assert not await app.db.query('SELECT * FROM requests')
     await app.event(action='back')
-    assert (await app.draft())['branch_key'] == 'preobrazhenka'
-    assert (await app.draft())['step'] == 'branch'
-    await app.event(callback=f'd:{old["id"]}:{old["version"]}:branch.zhulebino')
-    assert 'устарела' in (await latest(app))['text']
-    await app.event(action='menu:new', uid=10003)
-    await app.event(callback=f'd:{old["id"]}:{old["version"]}:branch.zhulebino', uid=10003)
+    assert (await app.draft())['branch_key'] == 'zhulebino'
+    await app.event('/new', uid=10003)
     assert (await app.draft(10003))['branch_key'] == 'preobrazhenka'
 
 
@@ -142,7 +135,7 @@ async def test_dynamic_admin_can_add_admin_and_named_promoter_and_roles_persist(
     await app.event('/start', uid=20002)
     assert any(a == 'admin:home' for row in (await latest(app))['keyboard'] for _, a in row)
     await app.event('/new', uid=30001)
-    assert (await app.draft(30001))['step'] == 'branch'
+    assert (await app.draft(30001))['step'] == 'parent'
 
 
 async def test_nonadmin_cannot_forge_roles_names_or_watch_preferences(app):
@@ -171,7 +164,7 @@ async def test_admin_watch_marks_persist_and_global_outage_reaches_every_admin(a
 
 class UIBot:
     def __init__(self):
-        self.sent, self.edited, self.acks = [], [], []
+        self.sent, self.edited, self.acks, self.deleted = [], [], [], []
         self.error = None
 
     async def send_message(self, chat, text, **kw):
@@ -184,6 +177,9 @@ class UIBot:
             raise error
         self.edited.append((text, kw))
         return True
+
+    async def delete_message(self, chat_id, message_id):
+        self.deleted.append((chat_id, message_id))
 
     async def answer_callback_query(self, text):
         self.acks.append(text)
@@ -202,8 +198,8 @@ async def test_navigation_and_text_answers_edit_one_message_per_user_after_resta
     out = Outbox(app.db, bot, app.s)
     await app.event('/start')
     await drain(out)
+    await app.event(callback='branch:select:kuzminki')
     await app.event(action='menu:new')
-    await app.event(action='branch.kuzminki')
     await app.event('Анна')
     await drain(out)
     assert len(bot.sent) == 1 and len(bot.edited) == 3

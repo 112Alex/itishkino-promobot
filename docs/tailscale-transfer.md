@@ -1,6 +1,6 @@
 # Перенос на Mac Mini через Tailscale без установки клиента в основную ОС
 
-Инструкция рассчитана на Linux/DietPi amd64 на Mac Mini, первую установку бота и текущую локальную версию 0.3.1 в Docker. Tailscale на сервере уже работает. Команды ниже выполняет владелец; серверный доступ ещё нужно проверить. На основной машине текущий бот продолжает работать до шага окончательного переноса.
+Инструкция рассчитана на Linux/DietPi amd64 на Mac Mini, первую установку бота и текущую локальную версию 0.3.2 в Docker. Tailscale на сервере уже работает. Команды ниже выполняет владелец; серверный доступ ещё нужно проверить. На основной машине текущий бот продолжает работать до шага окончательного переноса.
 
 ## 1. Доступ из терминала
 
@@ -94,8 +94,8 @@ chmod 700 ~/promobot-transfer
 На основном ПК, из каталога проекта:
 
 ```sh
-scp outputs/itishkino-promobot-0.3.1-linux-amd64.tar.gz \
-    outputs/SHA256SUMS school-mini:~/promobot-transfer/
+scp /mnt/storage/python/bot_for_leads/outputs/itishkino-promobot-0.3.2-linux-amd64.tar.gz \
+    /mnt/storage/python/bot_for_leads/outputs/SHA256SUMS school-mini:~/promobot-transfer/
 ```
 
 На сервере:
@@ -103,7 +103,7 @@ scp outputs/itishkino-promobot-0.3.1-linux-amd64.tar.gz \
 ```sh
 cd ~/promobot-transfer
 sha256sum -c SHA256SUMS
-docker load -i itishkino-promobot-0.3.1-linux-amd64.tar.gz
+docker load -i itishkino-promobot-0.3.2-linux-amd64.tar.gz
 ```
 
 ## 3. Передать настройки и проверить серверную сеть
