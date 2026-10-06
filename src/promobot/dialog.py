@@ -10,7 +10,7 @@ LABELS = {"queued": "В очереди", "checking": "Проверяется", "
           "verifying": "Сверка результата", "delivered": "Создано в CRM",
           "duplicate_review": "Совпадение — у администратора", "retry_wait": "Ожидание повтора",
           "manual_review": "Нужна проверка администратора", "failed": "Ошибка"}
-PREFERENCES = ["Только писать", "Только звонить", "Можно оба способа", "Не уточнили"]
+PREFERENCES = ["Только писать", "Только звонить", "Можно оба способа"]
 MESSENGERS = ["MAX", "Telegram", "WhatsApp"]
 HELP = ("Одна анкета — одна семья. Добавляйте всех детей. Телефон или Telegram обязателен. "
         "Комментарий один, его можно исправить перед отправкой. «Заявка сохранена» означает приём ботом; "
@@ -57,7 +57,7 @@ class Dialog:
             "parent": "Имя родителя (до 50 символов):", "phone": "Введите телефон с кодом страны:",
             "username": "Введите @username или ссылку t.me:", "child_name": "Имя ребёнка:",
             "child_age": "Возраст ребёнка, полных лет:", "comment": "Введите один комментарий для всей семьи:",
-            "title": f'Полный заголовок не помещается в CRM ({self.s.name_limit} символов). Введите сокращённый заголовок; полный состав семьи останется в примечании:',
+            "title": f'Полный заголовок не помещается в CRM ({self.s.name_limit} символов). Введите сокращённый заголовок; полный состав семьи останется в комментарии CRM:',
             "contact_type": "Выберите основной контакт:", "extra": "Добавить дополнительный контакт?",
             "messengers": "Какие мессенджеры доступны по телефону? Выберите несколько, затем «Дальше».",
             "preference": "Как связаться?", "children": "Добавить ещё ребёнка?",
@@ -74,7 +74,7 @@ class Dialog:
             options = [(('✅ ' if m in data.get("messengers", []) else '') + m, f'msg{n}') for n, m in enumerate(MESSENGERS)]
             options += [("Только телефон / не указано", "none"), ("Дальше", "next")]
         elif step == "preference":
-            options = [(p, f'pref{n}') for n, p in enumerate(PREFERENCES) if data.get("phones") or n in {0, 3}]
+            options = [(p, f'pref{n}') for n, p in enumerate(PREFERENCES) if data.get("phones") or n == 0]
         elif step == "child_age":
             options = [("Не уточнили", "unknown")]
         elif step == "children":
@@ -353,11 +353,11 @@ class Dialog:
             else:
                 raise InputError("Выберите мессенджеры кнопками")
         elif step == "preference":
-            if not action.startswith("pref") or action[4:] not in {"0", "1", "2", "3"}:
+            if not action.startswith("pref") or action[4:] not in {"0", "1", "2"}:
                 raise InputError("Выберите предпочтение кнопкой")
             n = int(action[4:])
             if not data.get("phones") and n in {1, 2}:
-                raise InputError("Без телефона доступны только переписка и «Не уточнили»")
+                raise InputError("Без телефона доступна только переписка")
             data["preference"] = PREFERENCES[n]
             finish("child_name" if not data["children"] else "review")
         elif step == "child_name":
@@ -450,6 +450,12 @@ class Dialog:
         data = d["data"]
         if not data["children"] or not (data.get("phones") or data.get("usernames")):
             raise InputError("Неполная анкета")
+        if data.get('preference') not in PREFERENCES:
+            data['editing'] = True
+            d['step'], d['version'] = 'preference', d['version'] + 1
+            await self.save(c, d)
+            return await reply(*self.screen(d))
+        data['crm_format'] = 2
         branch = self.branch(d)
         data["crm_settings"] = {k: branch.get(k) for k in ("key", "crm_id", "pipeline_id", "status_id", "source_id", "request_field", "technical_user_id", "initial_unassigned")}
         ident = f'{self.s.environment}-{self.bot_id}-{d["branch_key"]}-{uuid.uuid4().hex}'

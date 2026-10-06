@@ -141,31 +141,71 @@ class Worker:
             await self.change(r["id"], "crm_created", "comment_check", crm_id=model["id"])
         # Verify before adding a communication, so automation conflicts don't cause more writes.
         await crm.verify(r["crm_id"], payload)
-        if r["data"].get("comment"):
-            mark = f'[promobot:{r["id"]}]'
-            found = [x for x in await crm.comments(r["crm_id"]) if mark in x.get("comment", "").splitlines()]
-            if len(found) > 1:
-                raise CRMError("comment_not_unique")
-            if not found:
-                current = await self.db.query("SELECT phase FROM jobs WHERE request_id=?", (r["id"],))
-                # own() recovery must not overwrite an uncertain comment phase.
-                if r.get("communication_id") or phase in {"reconcile_comment", "verify"} or current[0]["phase"] == "reconcile_comment":
-                    raise CRMError("comment_outcome_unknown", True)
-                await self.change(r["id"], "comment_pending", "reconcile_comment")
-                try:
-                    created = await crm.add_comment(r["crm_id"], communication(r))
-                except CRMError as exc:
-                    if not exc.ambiguous:
-                        await self.db.execute("UPDATE jobs SET phase='comment_check' WHERE request_id=?", (r["id"],))
-                    raise
-                await self.change(r["id"], "verifying", "verify", communication_id=created["id"])
+        if r["data"].get("comment") or r["data"].get("crm_format") == 2:
+            if r['data'].get('crm_format') == 2:
+                await self.deliver_plain_comment(r, crm, settings, phase)
+            else:
+                mark = f'[promobot:{r["id"]}]'
                 found = [x for x in await crm.comments(r["crm_id"]) if mark in x.get("comment", "").splitlines()]
-            if len(found) != 1 or found[0].get("comment") != communication(r):
-                raise CRMError("comment_verify_mismatch", True)
-            expected_user = settings.branch.get("technical_user_id") or (990 if self.s.mode == "mock" else None)
-            if found[0].get("user_id") != expected_user or found[0].get("type_id") != 1:
-                raise CRMError("comment_author_mismatch")
-            await self.change(r["id"], "verifying", "verify", communication_id=found[0]["id"])
+                if len(found) > 1:
+                    raise CRMError("comment_not_unique")
+                if not found:
+                    current = await self.db.query("SELECT phase FROM jobs WHERE request_id=?", (r["id"],))
+                    # own() recovery must not overwrite an uncertain comment phase.
+                    if r.get("communication_id") or phase in {"reconcile_comment", "verify"} or current[0]["phase"] == "reconcile_comment":
+                        raise CRMError("comment_outcome_unknown", True)
+                    await self.change(r["id"], "comment_pending", "reconcile_comment")
+                    try:
+                        created = await crm.add_comment(r["crm_id"], communication(r))
+                    except CRMError as exc:
+                        if not exc.ambiguous:
+                            await self.db.execute("UPDATE jobs SET phase='comment_check' WHERE request_id=?", (r["id"],))
+                        raise
+                    await self.change(r["id"], "verifying", "verify", communication_id=created["id"])
+                    found = [x for x in await crm.comments(r["crm_id"]) if mark in x.get("comment", "").splitlines()]
+                if len(found) != 1 or found[0].get("comment") != communication(r):
+                    raise CRMError("comment_verify_mismatch", True)
+                expected_user = settings.branch.get("technical_user_id") or (990 if self.s.mode == "mock" else None)
+                if found[0].get("user_id") != expected_user or found[0].get("type_id") != 1:
+                    raise CRMError("comment_author_mismatch")
+                await self.change(r["id"], "verifying", "verify", communication_id=found[0]["id"])
         await crm.verify(r["crm_id"], payload)
         await self.change(r["id"], "delivered", "verify", verified_at=now(), error=None)
         await self.notice(r, "delivered")
+
+    async def deliver_plain_comment(self, r, crm, settings, phase):
+        """Resolve by communication ID or an exact new comment after a saved baseline."""
+        expected = communication(r)
+        author = settings.branch.get('technical_user_id') or (990 if self.s.mode == 'mock' else None)
+        comments = await crm.comments(r['crm_id'])
+        current = (await self.db.query('SELECT phase FROM jobs WHERE request_id=?', (r['id'],)))[0]['phase']
+        if r.get('communication_id'):
+            found = [x for x in comments if x['id'] == r['communication_id']]
+        elif phase in {'reconcile_comment', 'verify'} or current == 'reconcile_comment':
+            before = r['data'].get('_comment_before')
+            if before is None:
+                raise CRMError('comment_outcome_unknown', True)
+            found = [x for x in comments if x['id'] not in before and x.get('comment') == expected
+                     and x.get('user_id') == author and x.get('type_id') == 1]
+            if not found:
+                raise CRMError('comment_outcome_unknown', True)
+        else:
+            r['data']['_comment_before'] = [x['id'] for x in comments]
+            # Commit baseline and uncertain phase before the external write.
+            await self.change(r['id'], 'comment_pending', 'reconcile_comment', data=dumps(r['data']))
+            try:
+                created = await crm.add_comment(r['crm_id'], expected)
+            except CRMError as exc:
+                if not exc.ambiguous:
+                    await self.db.execute("UPDATE jobs SET phase='comment_check' WHERE request_id=?", (r['id'],))
+                raise
+            r['communication_id'] = created['id']
+            await self.change(r['id'], 'verifying', 'verify', communication_id=created['id'])
+            found = [x for x in await crm.comments(r['crm_id']) if x['id'] == created['id']]
+        if len(found) > 1:
+            raise CRMError('comment_not_unique')
+        if len(found) != 1 or found[0].get('comment') != expected:
+            raise CRMError('comment_verify_mismatch', True)
+        if found[0].get('user_id') != author or found[0].get('type_id') != 1:
+            raise CRMError('comment_author_mismatch')
+        await self.change(r['id'], 'verifying', 'verify', communication_id=found[0]['id'])

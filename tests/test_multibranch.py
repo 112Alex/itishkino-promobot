@@ -57,7 +57,7 @@ async def test_two_promoters_same_contact_separate_branches_and_comments(app):
         assert len(comments) == 1
         assert comments[0]['branch_id'] == r['crm_branch_id']
         assert json.loads(r['data'])['comment'] in comments[0]['comment']
-        assert r['id'] in comments[0]['comment']
+        assert r['id'] not in comments[0]['comment']
 
 
 async def test_branch_preference_cannot_move_existing_draft_and_explicit_edit_can(app):

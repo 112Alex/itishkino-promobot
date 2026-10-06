@@ -13,11 +13,13 @@ async def test_one_child_delivery_and_comment(app):
     assert row["state"] == "delivered"
     models = await app.crm.customers()
     assert len(models) == 1 and models[0]["name"] == "Анна Алиса 9"
-    assert "Только писать: MAX, Telegram" in models[0]["note"]
-    assert "Алису очень заинтересовала робототехника" in models[0]["note"]
+    assert models[0]["note"].endswith("\nписать")
+    assert "Алису очень заинтересовала робототехника" not in models[0]["note"]
     comments = await app.crm.comments(row["crm_id"])
     assert len(comments) == 1 and comments[0]["user_id"] == 990
-    assert comments[0]["comment"].endswith(f'[promobot:{r["id"]}]')
+    assert "Алису очень заинтересовала робототехника" in comments[0]["comment"]
+    assert r["id"] not in comments[0]["comment"]
+    assert "Мессенджеры: MAX, Telegram" in comments[0]["comment"]
     assert models[0]["teacher_ids"] == [] and models[0]["assigned_id"] is None
     assert "dob" not in models[0]
 
@@ -27,7 +29,9 @@ async def test_two_kids_one_lead(app):
     await app.worker.tick()
     models = await app.crm.customers()
     assert len(models) == 1 and models[0]["name"] == "Настя Мария 7 Денис 8"
-    assert "1. Мария — 7" in models[0]["note"] and "2. Денис — 8" in models[0]["note"]
+    comment = (await app.crm.comments(models[0]["id"]))[0]["comment"]
+    assert "1. Мария — 7" in comment and "2. Денис — 8" in comment
+    assert "Мария" not in models[0]["note"]
 
 
 async def test_username_only_and_no_empty_comment(app):
@@ -36,8 +40,10 @@ async def test_username_only_and_no_empty_comment(app):
     lead = (await app.crm.customers())[0]
     assert lead["phone"] == []
     assert lead["web"] == ["https://t.me/my_parent"]
-    assert await app.crm.comments(lead["id"]) == []
-    assert "Только писать" in lead["note"]
+    comments = await app.crm.comments(lead["id"])
+    assert len(comments) == 1 and "Родитель: Анна" in comments[0]["comment"]
+    assert "None" not in comments[0]["comment"]
+    assert lead["note"].endswith("\nписать")
 
 
 @pytest.mark.parametrize("bad", ["abc", "123", "+999999999999"])
@@ -74,8 +80,10 @@ async def test_long_title_explicit_shortening_preserves_data(app):
     await app.worker.tick()
     model = (await app.crm.customers())[0]
     assert model["name"] == "Анна семья"
-    assert child in model["note"]
-    assert "&lt;сладкое&gt;\nПросили после 19:00" in model["note"]
+    comment = (await app.crm.comments(model["id"]))[0]["comment"]
+    assert child in comment
+    assert "&lt;сладкое&gt;\nПросили после 19:00" in comment
+    assert child not in model["note"]
 
 
 async def test_three_promoters_isolated(app):

@@ -14,8 +14,9 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
-def moscow(value):
-    return datetime.fromisoformat(value).astimezone(ZoneInfo("Europe/Moscow")).strftime("%d.%m.%Y %H:%M:%S МСК")
+def moscow(value, seconds=True):
+    pattern = "%d.%m.%Y %H:%M:%S МСК" if seconds else "%d.%m.%Y %H:%M"
+    return datetime.fromisoformat(value).astimezone(ZoneInfo("Europe/Moscow")).strftime(pattern)
 
 
 def clean(value, multiline=False):
@@ -91,10 +92,19 @@ def crm_payload(request, settings):
     heading = d.get("title") or title(d)
     if len(heading) > settings.name_limit or len(d["parent"]) > 50:
         raise InputError("Слишком длинный заголовок/имя родителя для CRM")
-    note = (f'{d["preference"]}: {", ".join(d.get("messengers", [])) or "мессенджер не указан"}\n'
-            f'{d.get("comment", "")}\nРодитель: {d["parent"]}\n{family(d)}\n'
-            f'Контакты: {", ".join(d.get("phones", []) + d.get("usernames", []))}\n'
-            f'Заявка {request["id"]}; подтверждена {moscow(request["confirmed_at"])}')
+    if d.get('crm_format') == 2:
+        contact = {'Только писать': 'писать', 'Только звонить': 'звонить', 'Можно оба способа': 'писать/звонить'}
+        try:
+            preference = contact[d['preference']]
+        except KeyError:
+            raise InputError('Выберите способ связи: писать, звонить или писать/звонить') from None
+        note = f'{moscow(request["confirmed_at"], seconds=False)}\n{preference}'
+    else:
+        # Keep old queued payloads stable, including ambiguous writes already sent to CRM.
+        note = (f'{d["preference"]}: {", ".join(d.get("messengers", [])) or "мессенджер не указан"}\n'
+                f'{d.get("comment", "")}\nРодитель: {d["parent"]}\n{family(d)}\n'
+                f'Контакты: {", ".join(d.get("phones", []) + d.get("usernames", []))}\n'
+                f'Заявка {request["id"]}; подтверждена {moscow(request["confirmed_at"])}')
     payload = {"name": html.escape(heading), "legal_name": html.escape(d["parent"]),
             "legal_type": 1, "is_study": 0, "branch_ids": [b["crm_id"]],
             "lead_status_ids": [b["status_id"]], "lead_source_id": b["source_id"],
@@ -108,7 +118,15 @@ def crm_payload(request, settings):
 
 
 def communication(request):
-    return html.escape(request["data"]["comment"]) + f'\n[promobot:{request["id"]}]'
+    data = request['data']
+    if data.get('crm_format') != 2:
+        return html.escape(data['comment']) + f'\n[promobot:{request["id"]}]'
+    details = [data['comment']] if data.get('comment') else []
+    details += [f'Родитель: {data["parent"]}', 'Дети:', family(data),
+                'Контакты: ' + ', '.join(data.get('phones', []) + data.get('usernames', [])),
+                'Мессенджеры: ' + (', '.join(data.get('messengers', [])) or 'не указаны'),
+                'Связь: ' + data['preference']]
+    return html.escape('\n'.join(details))
 
 
 def telegram_chunks(text, limit=3500):
