@@ -48,7 +48,7 @@ async def test_username_only_and_no_empty_comment(app):
 
 @pytest.mark.parametrize("bad", ["abc", "123", "+999999999999"])
 async def test_bad_phone_keeps_step(app, bad):
-    await app.event(action="menu:new")
+    await app.legacy_new()
     await app.event("Анна")
     await app.event(action="phone")
     before = await app.draft()
@@ -123,7 +123,7 @@ async def test_duplicate_update_and_callback(app):
 
 
 async def test_foreign_and_old_buttons(app):
-    await app.event(action="menu:new")
+    await app.legacy_new()
     d = await app.draft()
     old = f'd:{d["id"]}:{d["version"]}:cancel'
     await app.event("Анна")
@@ -134,7 +134,7 @@ async def test_foreign_and_old_buttons(app):
 
 
 async def test_order_two_fast_replies(app):
-    await app.event(action="menu:new")
+    await app.legacy_new()
     await app.event("Анна")
     await app.event(action="username")
     await app.event("@my_parent")
@@ -161,7 +161,7 @@ async def test_restart_stale_draft_and_inbox_recovery(app):
     app.dialog = Dialog(app.db, app.s, "42")
     await app.dialog.process(500)
     d = (await app.db.query("SELECT * FROM drafts"))[0]
-    assert d["step"] == "parent"
+    assert d["step"] == "message"
     await app.dialog.process(500)
     assert len(await app.db.query("SELECT * FROM drafts")) == 1
     await app.db.execute("UPDATE drafts SET updated_at='2020-01-01T00:00:00+00:00'")
@@ -185,13 +185,12 @@ async def test_menu_start_cancel_new_all_states(app, step):
     assert (await app.draft())["step"] == step
     await app.event("/menu")
     await app.event(action="menu:new")
-    assert (await app.draft())["step"] == "replace"
-    await app.event(action="resume")
-    assert (await app.draft())["step"] == step
+    assert (await app.draft())["step"] == "message"
+    assert (await app.draft())["data"] == before
     await app.event("/cancel")
     assert await app.draft() is None
     await app.event("/new")
-    assert (await app.draft())["step"] == "parent"
+    assert (await app.draft())["step"] == "message"
 
 
 async def test_edit_children_comment_and_contacts(app):

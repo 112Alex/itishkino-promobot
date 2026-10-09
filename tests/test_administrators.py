@@ -14,7 +14,9 @@ async def test_branch_admin_can_read_and_retry_but_not_override_duplicate(app):
     r = await app.intake()
     await app.event('/start', uid=10005)
     buttons = (await reply(app))['keyboard']
-    assert any(a == 'admin:home' for row in buttons for _, a in row)
+    assert not buttons
+    await app.event('/admin', uid=10005)
+    assert '/add_admin' in (await reply(app))['text']
     await app.event('/request ' + r['id'], uid=10005)
     assert 'Анна' in (await reply(app))['text']
     await app.db.execute("UPDATE requests SET state='manual_review'")

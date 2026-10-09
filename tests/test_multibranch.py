@@ -73,7 +73,7 @@ async def test_branch_menu_changes_draft_preserves_answers_and_new_leads_skip_ch
     assert (await app.crm.for_branch('kuzminki').customers())[0]['branch_ids'] == [905]
     await app.event(action='menu:new')
     assert (await app.draft())['branch_key'] == 'kuzminki'
-    assert (await app.draft())['step'] == 'parent'
+    assert (await app.draft())['step'] == 'message'
 
 
 async def test_branch_menu_invalidation_and_back_cannot_restore_previous_branch(app):
@@ -117,8 +117,7 @@ async def test_dynamic_admin_can_add_admin_and_named_promoter_and_roles_persist(
     await app.event(callback='admin:addadmin', uid=20001)
     await app.event('20002', uid=20001)
     await app.event('Мария', uid=20001)
-    await app.event('/add_promoter 30001', uid=20002)
-    await app.event('Максим', uid=20002)
+    await app.event('/add_promoter 30001 Максим', uid=20002)
     await app.event('/promoters', uid=20001)
     data = await latest(app)
     assert 'Максим' in data['text'] and '30001' not in data['text']
@@ -133,9 +132,9 @@ async def test_dynamic_admin_can_add_admin_and_named_promoter_and_roles_persist(
     reopened = await Store(app.s.database).open()
     app.db.conn, app.db.lock = reopened.conn, reopened.lock
     await app.event('/start', uid=20002)
-    assert any(a == 'admin:home' for row in (await latest(app))['keyboard'] for _, a in row)
+    assert '/admin' in (await latest(app))['text']
     await app.event('/new', uid=30001)
-    assert (await app.draft(30001))['step'] == 'parent'
+    assert (await app.draft(30001))['step'] == 'message'
 
 
 async def test_nonadmin_cannot_forge_roles_names_or_watch_preferences(app):
@@ -150,10 +149,10 @@ async def test_nonadmin_cannot_forge_roles_names_or_watch_preferences(app):
 async def test_admin_watch_marks_persist_and_global_outage_reaches_every_admin(app):
     franchise(app)
     await watch_only(app, 10005, 'kuzminki')
-    await app.event(callback='admin:watch', uid=10005)
+    await app.event('/watch', uid=10005)
     p = await latest(app)
-    assert [label for row in p['keyboard'] for label, action in row if action == 'admin:watch:kuzminki'][0].startswith('✅')
-    assert [label for row in p['keyboard'] for label, action in row if action == 'admin:watch:maryino'][0].startswith('⬜')
+    assert 'Кузьминки' in p['text'] and 'Марьино' not in p['text']
+    assert not p['keyboard']
     async with app.db.tx() as c:
         assert await administrators(c, app.s, 'kuzminki') == [10001, 10005, 10006]
         assert await administrators(c, app.s, 'maryino') == [10001, 10006]
@@ -210,7 +209,7 @@ async def test_navigation_and_text_answers_edit_one_message_per_user_after_resta
     await app.event('+79991234567')
     await drain(out)
     assert len(bot.sent) == 1 and len(bot.edited) == 5
-    assert any(b.text.startswith('✅ Телефон') for row in bot.edited[-1][1]['reply_markup'].inline_keyboard for b in row)
+    assert 'одним сообщением' in bot.edited[-1][0]
     for _, kw in bot.edited:
         for row in kw['reply_markup'].inline_keyboard:
             for button in row:

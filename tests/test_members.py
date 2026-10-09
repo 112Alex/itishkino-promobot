@@ -15,11 +15,11 @@ async def test_each_admin_can_grant_numeric_id_and_revoke(app, admin):
     app.s.administrators = {10005:'preobrazhenka',10006:'preobrazhenka'}
     app.s.promoters.clear()
     await app.event('/start',uid=admin)
-    assert any(a == 'admin:home' for row in (await latest(app))['keyboard'] for _,a in row)
+    assert '/admin' in (await latest(app))['text']
     await app.event(callback='admin:add',uid=admin)
     await app.event('20001',uid=admin)
     await app.event('/new',uid=20001)
-    assert (await app.draft(20001))['step']=='parent'
+    assert (await app.draft(20001))['step']=='message'
     p=(await app.db.query('SELECT * FROM promoters WHERE user_id=20001'))[0]
     await app.event(callback=f'admin:remove:20001:{p["revision"]}',uid=admin)
     assert 'Отключить доступ' in (await latest(app))['text']
@@ -27,14 +27,14 @@ async def test_each_admin_can_grant_numeric_id_and_revoke(app, admin):
     await app.event('/new',uid=20001)
     assert 'Доступ не разрешён' in (await latest(app))['text']
     # Old revoke button cannot remove a re-added user.
-    await app.event('/add_promoter 20001',uid=admin)
+    await app.event('/add_promoter 20001 Максим',uid=admin)
     await app.event(callback=f'admin:revoke:20001:{p["revision"]}',uid=admin)
     assert (await app.db.query('SELECT active FROM promoters WHERE user_id=20001'))[0]['active']==1
 
 
 async def test_username_requires_start_and_admin_numeric_confirmation(app):
     app.s.promoters.clear()
-    await app.event('/add_promoter @new_person',uid=app.s.admin)
+    await app.event('/add_promoter @new_person Максим',uid=app.s.admin)
     await app.event('/start',uid=20001,username='NEW_PERSON')
     assert 'Дождитесь подтверждения' in (await latest(app))['text']
     invite=(await app.db.query('SELECT * FROM promoter_invites'))[0]
@@ -44,7 +44,7 @@ async def test_username_requires_start_and_admin_numeric_confirmation(app):
     assert not await app.db.query('SELECT * FROM promoters')
     await app.event(callback=f'admin:approve:{invite["id"]}:20001',uid=app.s.admin)
     await app.event('/new',uid=20001,username='changed_name')
-    assert (await app.draft(20001))['step']=='parent'
+    assert (await app.draft(20001))['step']=='message'
     # Taking the old username never transfers an existing numeric grant.
     await app.event('/new',uid=20002,username='new_person')
     assert not await app.draft(20002)
@@ -54,7 +54,7 @@ async def test_username_requires_start_and_admin_numeric_confirmation(app):
 async def test_known_username_reassignment_invalidates_old_confirmation(app):
     app.s.promoters.clear()
     await app.event('/id',uid=20001,username='known_person')
-    await app.event('/add_promoter known_person',uid=app.s.admin)
+    await app.event('/add_promoter known_person Максим',uid=app.s.admin)
     invite=(await app.db.query('SELECT * FROM promoter_invites'))[0]
     await app.event('/id',uid=20002,username='known_person')
     await app.event(callback=f'admin:approve:{invite["id"]}:20001',uid=app.s.admin)
@@ -65,7 +65,7 @@ async def test_known_username_reassignment_invalidates_old_confirmation(app):
 
 async def test_invite_cancel_and_cross_branch_buttons(app):
     app.s.promoters.clear()
-    await app.event('/add_promoter @future_person',uid=app.s.admin)
+    await app.event('/add_promoter @future_person Максим',uid=app.s.admin)
     invite=(await app.db.query('SELECT * FROM promoter_invites'))[0]
     await app.event(callback=f'admin:cancel:{invite["id"]}',uid=app.s.admin)
     await app.event('/start',uid=20001,username='future_person')
@@ -96,7 +96,8 @@ async def test_admin_add_input_does_not_overwrite_family_draft(app):
     assert (await app.draft(app.s.admin))['data']==before['data']
     await app.event(callback='admin:list',uid=app.s.admin)
     await app.event('Родитель',uid=app.s.admin)
-    assert (await app.draft(app.s.admin))['data']['parent']=='Родитель'
+    assert not (await app.draft(app.s.admin))['data'].get('parent')
+    assert not await app.db.query('SELECT * FROM requests')
 
 
 async def test_network_errors_reach_three_admins_once_per_transition(app):
@@ -109,16 +110,16 @@ async def test_network_errors_reach_three_admins_once_per_transition(app):
 
 
 async def test_non_admin_commands_and_group_do_not_grant(app):
-    await app.event('/add_promoter 20001',uid=10002)
-    await app.event('/add_promoter 20001',uid=app.s.admin,chat_type='group')
+    await app.event('/add_promoter 20001 Максим',uid=10002)
+    await app.event('/add_promoter 20001 Максим',uid=app.s.admin,chat_type='group')
     assert not await app.db.query('SELECT * FROM promoters WHERE user_id=20001')
 
 
 async def test_duplicate_grant_no_extra_audit_and_invalid_id(app):
-    await app.event('/add_promoter 20001',uid=app.s.admin)
-    await app.event('/add_promoter 20001',uid=app.s.admin)
-    await app.event('/add_promoter 0',uid=app.s.admin)
-    await app.event('/add_promoter 9999999999999999999',uid=app.s.admin)
+    await app.event('/add_promoter 20001 Максим',uid=app.s.admin)
+    await app.event('/add_promoter 20001 Максим',uid=app.s.admin)
+    await app.event('/add_promoter 0 Максим',uid=app.s.admin)
+    await app.event('/add_promoter 9999999999999999999 Максим',uid=app.s.admin)
     assert len(await app.db.query('SELECT * FROM promoters WHERE user_id=20001'))==1
     assert len(await app.db.query("SELECT * FROM membership_audit WHERE target_id=20001 AND action='grant'"))==1
 
@@ -130,17 +131,16 @@ async def test_promoters_list_pages_are_bounded(app):
     await app.event('/promoters',uid=app.s.admin)
     p=await latest(app)
     assert '20001' not in p['text'] and '20041' not in p['text']
-    assert any(a.startswith('admin:name:20001') for row in p['keyboard'] for _,a in row)
-    assert not any('20041' in a for row in p['keyboard'] for _,a in row)
-    assert sum(len(row) for row in p['keyboard'])<100
-    assert any(a=='admin:list:1' for row in p['keyboard'] for _,a in row)
-    await app.event(callback='admin:list:2',uid=app.s.admin)
-    assert any(a == 'admin:name:20041' for row in (await latest(app))['keyboard'] for _,a in row)
+    assert not p['keyboard']
+    assert '/promoters 2' in p['text']
+    await app.event('/promoters 3',uid=app.s.admin)
+    assert 'Промоутер №41' in (await latest(app))['text']
+
 
 
 async def test_foreign_branch_invite_cannot_be_approved(app):
     app.s.promoters.clear()
-    await app.event('/add_promoter @foreign_person',uid=app.s.admin)
+    await app.event('/add_promoter @foreign_person Максим',uid=app.s.admin)
     invite=(await app.db.query('SELECT * FROM promoter_invites'))[0]
     await app.event('/start',uid=20001,username='foreign_person')
     await app.db.execute("UPDATE promoter_invites SET branch_key='other'")

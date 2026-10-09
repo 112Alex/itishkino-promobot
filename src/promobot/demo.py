@@ -31,19 +31,8 @@ async def questionnaire(db, settings, bot_id):
     drafts = await db.query("SELECT step FROM drafts WHERE bot_id=? AND user_id=? AND active=1", (bot_id, uid))
     if drafts[0]["step"] == "replace":
         raise ConfigurationError("Для приёмки нужна БД без активного черновика владельца")
-    if drafts[0]["step"] == "branch":
-        await send(action="branch." + settings.branch["key"])
-    await send("Тест промобота")
-    await send(action="username")
-    await send("@promo_test_" + uuid.uuid4().hex[:16])
-    await send(action="next")
-    await send(action="pref0")
-    await send("Алиса")
-    await send("9")
-    await send(action="next")
-    await send(action="comment")
-    await send("Вымышленная семья. Проверка интеграции; не связываться.")
-    await send(action="confirm")
+    await send('"Тест промобота" Алиса 9 @promo_test_' + uuid.uuid4().hex[:16] +
+               '\nВымышленная семья. Проверка интеграции; не связываться.')
     return (await db.query("SELECT id FROM requests ORDER BY saved_at DESC LIMIT 1"))[0]["id"]
 
 

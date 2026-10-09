@@ -55,10 +55,16 @@ async def app(tmp_path):
         d = ds[0]
         d["data"] = json.loads(d["data"])
         return d
+    async def legacy_new(uid=10002):
+        await event(action='menu:new', uid=uid)
+        await db.execute("UPDATE drafts SET step='parent',paused=0 WHERE user_id=? AND active=1", (uid,))
     async def intake(uid=10002, parent="Анна", kids=(("Алиса", "9"),), telephone="8 (999) 123-45-67", telegram=None, comment="Алису очень заинтересовала робототехника", confirm=True, branch=None):
         if branch:
             await event(callback='branch:select:' + branch, uid=uid)
         await event(action="menu:new", uid=uid)
+        # Exercise compatibility with an existing pre-0.4 wizard draft. New
+        # single-message submissions have dedicated integration coverage.
+        await db.execute("UPDATE drafts SET step='parent',paused=0 WHERE user_id=? AND active=1", (uid,))
         await event(parent, uid=uid)
         await event(action="phone" if telephone else "username", uid=uid)
         await event(telephone or telegram, uid=uid)
@@ -87,7 +93,7 @@ async def app(tmp_path):
         result = await db.query("SELECT * FROM requests WHERE user_id=? ORDER BY saved_at DESC", (uid,))
         return result[0] if result else None
     yield SimpleNamespace(db=db, s=s, crm=crm, mock=mock, dialog=dialog, worker=worker,
-                          event=event, draft=draft, intake=intake)
+                          event=event, draft=draft, intake=intake, legacy_new=legacy_new)
     await crm.close()
     await mock.close()
     await db.close()

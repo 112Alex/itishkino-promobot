@@ -5,6 +5,19 @@ from datetime import datetime, timedelta, timezone
 from .domain import InputError, now, username, name, clean
 from .storage import enqueue, one, rows
 
+ADMIN_HELP = ('⚙️ Управление одним сообщением:\n'
+    '/add_promoter 123456789 Максим — добавить промоутера\n'
+    '/add_promoter @username Максим — приглашение по username\n'
+    '/add_admin 123456789 Олег — добавить администратора\n'
+    '/rename_promoter 123456789 Максим Иванов — изменить имя\n'
+    '/rename_admin 123456789 Олег Иванов — изменить имя\n'
+    '/remove_promoter 123456789 — отключить промоутера\n'
+    '/promoters — список промоутеров\n/admins — список администраторов\n'
+    '/watch Преображенка, Кузьминки — выбрать уведомления\n'
+    '/watch все — все филиалы; /watch нет — отключить\n'
+    '/watch — текущие подписки\n'
+    'Лиды добавляйте обычным сообщением, как промоутеры. Числа в примерах — Telegram ID человека.')
+
 
 class Members:
     def __init__(self, settings, bot_id):
@@ -145,9 +158,9 @@ class Members:
         return True
 
     def confirmation(self, invite):
-        return (f'Аккаунт @{invite["username"]} связался с ботом. Telegram ID: {invite["candidate_id"]}.\nПодтвердить доступ промоутера?',
-                [[('Подтвердить', f'admin:approve:{invite["id"]}:{invite["candidate_id"]}')],
-                 [('Отменить приглашение', f'admin:cancel:{invite["id"]}')], [('Назад', 'admin:list')]])
+        return (f'Аккаунт @{invite["username"]} связался с ботом. Telegram ID: {invite["candidate_id"]}.\n'
+                f'Для подтверждения отправьте /approve_promoter {invite["id"]} {invite["candidate_id"]}\n'
+                f'Для отмены: /cancel_invite {invite["id"]}', None)
 
     async def observe(self, c, sender):
         uid = sender.get('id')
@@ -224,7 +237,145 @@ class Members:
             await self.input_session(c, actor, 'name_promoter', uid)
             await reply('Промоутер добавлен. Введите имя для списка:', [[('↩️ Позже', 'admin:list')]])
 
+    async def text_command(self, c, actor, text, reply):
+        parts = text.strip().split(maxsplit=1)
+        command = parts[0].split('@', 1)[0] if parts else ''
+        commands = {'/admin', '/admins', '/promoters', '/add_promoter', '/add_admin',
+                    '/rename_promoter', '/rename_admin', '/remove_promoter', '/watch',
+                    '/approve_promoter', '/cancel_invite'}
+        if command not in commands:
+            return False
+        if not await self.is_admin(c, actor):
+            await reply('Только для администратора.')
+            return True
+        await c.execute('DELETE FROM admin_sessions WHERE bot_id=? AND user_id=?', (self.bot, actor))
+        argument = parts[1].strip() if len(parts) > 1 else ''
+
+        def numeric(value):
+            if not value.isascii() or not value.isdecimal() or not 0 < int(value) <= 2**52 - 1:
+                raise InputError('Нужен положительный числовой Telegram ID.')
+            return int(value)
+
+        try:
+            if command == '/admin':
+                await reply(ADMIN_HELP)
+            elif command in ('/promoters', '/admins'):
+                page = int(argument or '1')
+                if not 1 <= page <= 100000:
+                    raise InputError('Номер страницы должен быть положительным.')
+                table = 'promoters' if command == '/promoters' else 'administrators'
+                predicate = ' AND p.branch_key=?' if table == 'promoters' else ''
+                params = (self.bot, self.branch, (page-1)*20) if predicate else (self.bot, (page-1)*20)
+                found = await rows(c, f'''SELECT p.*,u.full_name,u.username FROM {table} p LEFT JOIN telegram_users u
+                    ON p.bot_id=u.bot_id AND p.user_id=u.user_id WHERE p.bot_id=?{predicate} AND p.active=1
+                    ORDER BY p.user_id LIMIT 21 OFFSET ?''', params)
+                value = ('👥 Промоутеры' if table == 'promoters' else '🛡 Администраторы') + f' — страница {page}:\n'
+                value += '\n'.join(self.label(member, (page-1)*20+i+1).replace('Промоутер №', 'Администратор №') if table == 'administrators'
+                    else self.label(member, (page-1)*20+i+1) for i, member in enumerate(found[:20])) or 'Пока нет.'
+                if len(found) > 20:
+                    value += f'\nСледующая страница: {command} {page+1}'
+                if table == 'promoters' and page == 1:
+                    pending = await rows(c, "SELECT * FROM promoter_invites WHERE bot_id=? AND branch_key=? AND state IN ('waiting','approval') ORDER BY created_at LIMIT 20", (self.bot, self.branch))
+                    for invite in pending:
+                        value += f'\n@{invite["username"]}: ' + ('ожидает /start' if invite['state'] == 'waiting' else 'ожидает подтверждения')
+                        if invite['candidate_id']:
+                            value += f'\n/approve_promoter {invite["id"]} {invite["candidate_id"]}'
+                        value += f'\n/cancel_invite {invite["id"]}'
+                await reply(value)
+            elif command == '/watch':
+                if argument:
+                    if argument.casefold() in ('все', 'all'):
+                        selected = list(self.s.all_branches)
+                    elif argument.casefold() in ('нет', 'none'):
+                        selected = []
+                    else:
+                        lookup = {v.casefold(): key for key, branch in self.s.all_branches.items()
+                                  for v in (key, branch['name'], branch['name'].split('—')[-1].strip())}
+                        requested = [value.strip().casefold() for value in argument.split(',')]
+                        if any(value not in lookup for value in requested):
+                            raise InputError('Филиал не найден. Доступные: ' + ', '.join(b['name'] for b in self.s.all_branches.values()))
+                        selected = sorted({lookup[value] for value in requested})
+                    await c.execute('INSERT OR REPLACE INTO admin_watches VALUES(?,?,?)', (self.bot, actor, json.dumps(selected)))
+                old = await one(c, 'SELECT branches FROM admin_watches WHERE bot_id=? AND user_id=?', (self.bot, actor))
+                selected = json.loads(old['branches']) if old else list(self.s.all_branches)
+                await reply('🔔 Уведомления по заявкам: ' + (', '.join(self.s.all_branches[k]['name'] for k in selected if k in self.s.all_branches) or 'отключены') +
+                    '\nОбщие сбои сервиса получают все администраторы.\nИзменить: /watch Преображенка, Кузьминки')
+            elif command == '/cancel_invite':
+                changed = await c.execute("UPDATE promoter_invites SET state='cancelled' WHERE id=? AND bot_id=? AND branch_key=? AND state IN ('waiting','approval')", (argument, self.bot, self.branch))
+                await reply('Приглашение отменено.' if changed.rowcount else 'Активное приглашение не найдено.')
+            elif command == '/approve_promoter':
+                values = argument.split()
+                if len(values) != 2:
+                    raise InputError('Формат: /approve_promoter номер_приглашения Telegram_ID')
+                ident, target = values[0], numeric(values[1])
+                invite = await one(c, "SELECT * FROM promoter_invites WHERE id=? AND bot_id=? AND branch_key=? AND candidate_id=? AND state='approval'", (ident, self.bot, self.branch, target))
+                known = await one(c, 'SELECT user_id FROM telegram_users WHERE bot_id=? AND user_id=? AND username=?', (self.bot, target, invite['username'])) if invite else None
+                if not known:
+                    raise InputError('Приглашение устарело или username изменился. Проверьте /promoters.')
+                await self.grant(c, target, actor)
+                if invite['display_name']:
+                    await c.execute('UPDATE promoters SET display_name=? WHERE bot_id=? AND branch_key=? AND user_id=?', (invite['display_name'], self.bot, self.branch, target))
+                await c.execute("UPDATE promoter_invites SET state='approved' WHERE id=?", (ident,))
+                await reply('✅ Доступ промоутера подтверждён.')
+            else:
+                values = argument.split(maxsplit=1)
+                if not values or (command != '/remove_promoter' and len(values) < 2):
+                    raise InputError('Укажите ID и имя одним сообщением. Например: /add_promoter 123456789 Максим')
+                if command == '/remove_promoter' and len(values) != 1:
+                    raise InputError('Формат: /remove_promoter Telegram_ID')
+                label = name(values[1], 70) if len(values) > 1 else None
+                if command == '/add_promoter' and not (values[0].isascii() and values[0].isdecimal()):
+                    handle = username(values[0])[1:]
+                    invite = await one(c, "SELECT * FROM promoter_invites WHERE bot_id=? AND branch_key=? AND username=? AND state IN ('waiting','approval')", (self.bot, self.branch, handle))
+                    if invite:
+                        await c.execute('UPDATE promoter_invites SET display_name=? WHERE id=?', (label, invite['id']))
+                    else:
+                        ident = uuid.uuid4().hex[:16]
+                        await c.execute('INSERT INTO promoter_invites(id,bot_id,branch_key,username,created_by,created_at,display_name) VALUES(?,?,?,?,?,?,?)', (ident, self.bot, self.branch, handle, actor, now(), label))
+                        invite = await one(c, 'SELECT * FROM promoter_invites WHERE id=?', (ident,))
+                    known = await one(c, 'SELECT user_id FROM telegram_users WHERE bot_id=? AND username=?', (self.bot, handle))
+                    if known:
+                        invite['candidate_id'] = known['user_id']
+                        await c.execute("UPDATE promoter_invites SET state='approval',candidate_id=? WHERE id=?", (known['user_id'], invite['id']))
+                        await reply(*self.confirmation(invite))
+                    else:
+                        await reply(f'Приглашение для «{label}» (@{handle}) сохранено. Пусть человек отправит /start; затем подтвердите его аккаунт.')
+                else:
+                    target = numeric(values[0])
+                    if command == '/add_promoter':
+                        if await self.is_admin(c, target):
+                            raise InputError('У этого пользователя уже есть доступ администратора.')
+                        await self.grant(c, target, actor)
+                        await c.execute('UPDATE promoters SET display_name=?,updated_at=? WHERE bot_id=? AND branch_key=? AND user_id=?', (label, now(), self.bot, self.branch, target))
+                        await reply(f'✅ Промоутер «{label}» добавлен.')
+                    elif command == '/add_admin':
+                        await c.execute('''INSERT INTO administrators(bot_id,user_id,display_name,added_by,updated_at) VALUES(?,?,?,?,?)
+                            ON CONFLICT(bot_id,user_id) DO UPDATE SET active=1,display_name=excluded.display_name,revision=revision+1,updated_at=excluded.updated_at''', (self.bot, target, label, actor, now()))
+                        await self.audit(c, actor, target, 'grant_admin')
+                        await reply(f'✅ Администратор «{label}» добавлен. Он может добавлять других администраторов.')
+                    elif command == '/remove_promoter':
+                        if await self.is_admin(c, target):
+                            raise InputError('Эта команда не отключает администраторов.')
+                        changed = await c.execute('UPDATE promoters SET active=0,revision=revision+1,updated_at=? WHERE bot_id=? AND branch_key=? AND user_id=? AND active=1', (now(), self.bot, self.branch, target))
+                        if changed.rowcount:
+                            await self.audit(c, actor, target, 'revoke')
+                        await reply('Промоутер отключён. Сохранённые заявки остаются.' if changed.rowcount else 'Активный промоутер не найден.')
+                    else:
+                        table = 'promoters' if command == '/rename_promoter' else 'administrators'
+                        predicate = ' AND branch_key=?' if table == 'promoters' else ''
+                        params = (label, now(), self.bot, target, self.branch) if predicate else (label, now(), self.bot, target)
+                        changed = await c.execute(f'UPDATE {table} SET display_name=?,updated_at=? WHERE bot_id=? AND user_id=?{predicate} AND active=1', params)
+                        if not changed.rowcount:
+                            raise InputError('Пользователь с этой ролью не найден.')
+                        await self.audit(c, actor, target, 'rename')
+                        await reply(f'✅ Имя изменено: {label}.')
+        except (InputError, ValueError) as exc:
+            await reply('⚠️ ' + (str(exc) if isinstance(exc, InputError) else 'Проверьте аргументы команды.'))
+        return True
+
     async def handle(self, c, uid, text, action, reply):
+        if await self.text_command(c, uid, text, reply):
+            return True
         if await self.management(c, uid, text, action, reply):
             return True
         session = await one(c, 'SELECT * FROM admin_sessions WHERE bot_id=? AND branch_key=? AND user_id=?', (self.bot, self.branch, uid))

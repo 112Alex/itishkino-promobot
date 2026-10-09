@@ -1,9 +1,11 @@
 import json
+import re
 import uuid
 from datetime import datetime, timezone, timedelta
 from .domain import InputError, age, clean, family, name, now, phone, review, title, username, telegram_chunks
 from .storage import dumps, enqueue, one, rows
 from .members import Members
+from .intake import INSTRUCTIONS, parse_message
 
 LABELS = {"queued": "В очереди", "checking": "Проверяется", "creating": "Создаётся",
           "crm_created": "Карточка создана, проверяем", "comment_pending": "Сохраняется комментарий",
@@ -12,11 +14,10 @@ LABELS = {"queued": "В очереди", "checking": "Проверяется", "
           "manual_review": "Нужна проверка администратора", "failed": "Ошибка"}
 PREFERENCES = ["Только писать", "Только звонить", "Можно оба способа"]
 MESSENGERS = ["MAX", "Telegram", "WhatsApp"]
-HELP = ("Одна анкета — одна семья. Добавляйте всех детей. Телефон или Telegram обязателен. "
-        "Комментарий один, его можно исправить перед отправкой. «Заявка сохранена» означает приём ботом; "
-        "«Создано в CRM» приходит отдельно. До подтверждения доступны Назад, Отмена, Главное меню. "
-        "После отправки исправления — через администратора. При отключении дольше суток Telegram "
-        "может потерять ещё не принятые сообщения; проверьте ответ о сохранении.")
+HELP = INSTRUCTIONS + ('\n\nПо умолчанию с телефоном — писать/звонить, только с Telegram — писать. '
+        'Филиал выбирается только в меню. /mine — ваши заявки, /admin — управление доступом. '
+        '«Заявка сохранена» означает приём ботом; «Создано в CRM» приходит отдельно. '
+        'После отправки исправления — через администратора.')
 
 
 class Dialog:
@@ -25,15 +26,7 @@ class Dialog:
         self.members = Members(settings, bot_id)
 
     def menu(self, has_draft=False, admin=False):
-        result = [[("Добавить лида", "menu:new")]]
-        if has_draft:
-            result.append([("Продолжить анкету", "menu:continue")])
-        result += [[("Мои заявки", "menu:mine")], [("Помощь", "menu:help")]]
-        if len(self.s.all_branches) > 1:
-            result.insert(1, [('🏫 Выбрать филиал', 'menu:branches')])
-        if admin:
-            result.append([("⚙️ Админское меню", "admin:home")])
-        return result
+        return [[('🏫 Выбрать филиал', 'menu:branches')]] if len(self.s.all_branches) > 1 else []
 
     def branch(self, draft):
         return self.s.for_branch(draft['branch_key']).branch
@@ -51,6 +44,8 @@ class Dialog:
 
     def screen(self, d):
         data, step = d["data"], d["step"]
+        if step == 'message':
+            return '🏫 ' + self.branch(d)['name'] + '\n' + INSTRUCTIONS, self.menu()
         options = []
         prompts = {
             'branch': '🏫 В какой филиал отправить эту заявку?',
@@ -104,7 +99,7 @@ class Dialog:
         ident = uuid.uuid4().hex[:12]
         b = self.s.for_branch(await self.selected_branch(c, uid)).branch
         await c.execute("INSERT INTO drafts(id,bot_id,user_id,chat_id,branch_key,crm_branch_id,step,version,data,history,created_at,updated_at) VALUES(?,?,?,?,?,?,?,1,?,'[]',?,?)",
-                        (ident, self.bot_id, uid, chat, b['key'], b['crm_id'], 'parent',
+                        (ident, self.bot_id, uid, chat, b['key'], b['crm_id'], 'message',
                          dumps({"children": [], "phones": [], "usernames": [], "messengers": []}), stamp, stamp))
         return await self.draft(c, uid, chat)
 
@@ -145,6 +140,11 @@ class Dialog:
             key = f'in:{self.bot_id}:{update_id}'
             async def reply(value, keyboard=None):
                 # Plain text mode. No HTML interpretation in Telegram.
+                # Only branch navigation remains interactive; legacy draft callbacks
+                # still work during an upgrade, but are not shown in new messages.
+                keyboard = [[button for button in row if button[1].startswith(('branch:', 'menu:branches', 'menu:home'))]
+                            for row in (keyboard or [])]
+                keyboard = [row for row in keyboard if row]
                 active = await one(c, 'SELECT branch_key FROM drafts WHERE bot_id=? AND user_id=? AND active=1', (self.bot_id, uid))
                 branch = active['branch_key'] if active else await self.selected_branch(c, uid)
                 await c.execute('DELETE FROM ui_screens WHERE bot_id=? AND chat_id=?', (self.bot_id, chat))
@@ -177,6 +177,26 @@ class Dialog:
                     await reply("Ваш аккаунт найден. Дождитесь подтверждения администратора, затем отправьте /start." if pending else "Доступ не разрешён. Отправьте свой /id администратору.")
             else:
                 d = await self.draft(c, uid, chat)
+                looks_like_family = bool(text and (text[0].isalpha() or text[0] in '\"\'')
+                                         and re.search(r'\s(?:\d{1,3}|\?)(?:\s|$)', text.splitlines()[0]))
+                if not q and text and not text.startswith('/') and (not d or d['step'] == 'message' or d['paused'] or looks_like_family):
+                    try:
+                        data = parse_message(text, self.s)
+                    except InputError as exc:
+                        await reply(f'⚠️ {exc}\n\n' + INSTRUCTIONS, self.menu())
+                    else:
+                        if not d:
+                            d = await self.new(c, uid, chat)
+                        d['data'], d['history'], d['step'], d['paused'] = data, [], 'review', 0
+                        branch_key = await self.selected_branch(c, uid)
+                        d['branch_key'], d['crm_branch_id'] = branch_key, self.s.all_branches[branch_key]['crm_id']
+                        d['first_message_at'] = datetime.fromtimestamp(message.get('date', 0), timezone.utc).isoformat()
+                        d['first_received_at'] = event['received_at']
+                        d['version'] += 1
+                        await self.save(c, d)
+                        await self.confirm(c, d, message, reply)
+                    await finish()
+                    return
                 if d and (d['step'] == 'branch' or d['data'].get('resume_step') == 'branch'):
                     if d['step'] == 'branch':
                         d['step'] = 'review' if d['data'].pop('editing', False) else 'parent'
@@ -197,6 +217,10 @@ class Dialog:
                     action = "back"
                 elif text == "/menu":
                     action = "menu:home"
+                elif text == '/mine':
+                    action = 'menu:mine'
+                elif text == '/help':
+                    action = 'menu:help'
                 if (text.startswith("/request ") or text.startswith("/retry ")):
                     await self.admin_request(c, uid, text, reply)
                 elif text == "/problems":
@@ -230,8 +254,9 @@ class Dialog:
                         await reply('🏫 Выберите филиал для новых заявок:', [[(('✅ ' if k == selected else '🏫 ') + b['name'], 'branch:select:' + k)] for k, b in self.s.all_branches.items()] + [[('🏠 Главное меню', 'menu:home')]])
                     elif command == "new":
                         if d:
-                            d["data"]["resume_step"] = d["data"].get("resume_step", d["step"])
-                            d["step"], d["paused"] = "replace", 0
+                            # Existing answers stay stored until a complete, valid
+                            # replacement message commits successfully.
+                            d["step"], d["paused"] = "message", 0
                             d["version"] += 1
                             await self.save(c, d)
                         else:
@@ -259,7 +284,7 @@ class Dialog:
                             d["version"] += 1
                             await self.save(c, d)
                         chosen = self.s.all_branches[await self.selected_branch(c, uid)]['name']
-                        await reply('🏫 ' + chosen + '\n' + ("Главное меню. Черновик сохранён." if d else "Главное меню"), self.menu(bool(d), await self.members.is_admin(c, uid)))
+                        await reply('🏫 ' + chosen + '\n' + HELP + ('\n\nСтарый черновик сохранён; новую семью можно прислать целиком.' if d and d['step'] != 'message' else ''), self.menu(bool(d), await self.members.is_admin(c, uid)))
                 else:
                     valid = True
                     if q:
@@ -472,7 +497,7 @@ class Dialog:
                         (ident, d["id"], self.bot_id, d["user_id"], d["chat_id"], d["branch_key"], d["crm_branch_id"], dumps(data), stamp, now()))
         await c.execute("INSERT INTO jobs(request_id) VALUES(?)", (ident,))
         await c.execute("UPDATE drafts SET active=0,step='submitted',version=version+1 WHERE id=?", (d["id"],))
-        await reply(f"Заявка сохранена: {ident}. Доставка в CRM в очереди.", self.menu(False, await self.members.is_admin(c, d["user_id"])))
+        await reply(f"✅ Заявка сохранена: {ident}. Доставка в CRM в очереди.\n\n" + review(data, branch) + '\n\nСледующую семью можно отправить одним сообщением.', self.menu(False, await self.members.is_admin(c, d["user_id"])))
 
     async def problems(self, c, uid, reply):
         if not await self.members.is_admin(c, uid):

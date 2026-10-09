@@ -11,18 +11,18 @@ async def test_user_messages_are_deleted_only_after_committed_processing(app):
     franchise(app)
     await app.event(callback='branch:select:kuzminki')
     await app.event('/new')
-    await app.event('Анна')
+    await app.event('Анна Алиса 9 +79991234567')
     class Bot(UIBot):
         async def delete_message(self, chat_id, message_id):
             event = (await app.db.query('SELECT state FROM inbox WHERE update_id=?', (message_id,)))[0]
             assert event['state'] == 'done'
-            assert (await app.draft())['data']['parent'] == 'Анна'
+            assert json.loads((await app.db.query('SELECT data FROM requests'))[0]['data'])['parent'] == 'Анна'
             await super().delete_message(chat_id, message_id)
     bot = Bot()
     await drain(Outbox(app.db, bot, app.s))
     assert bot.deleted == [(10002, 2), (10002, 3)]
     assert len(bot.sent) == 1
-    assert (await app.draft())['branch_key'] == 'kuzminki'
+    assert (await app.db.query('SELECT branch_key FROM requests'))[0]['branch_key'] == 'kuzminki'
 
 
 async def test_failed_transaction_never_enqueues_deletion_then_replay_dedupes(app, monkeypatch):
@@ -35,8 +35,8 @@ async def test_failed_transaction_never_enqueues_deletion_then_replay_dedupes(ap
         return await original(*args, **kw)
     monkeypatch.setattr(module, 'enqueue', fail)
     with pytest.raises(sqlite3.OperationalError):
-        await app.event('Анна')
-    assert (await app.draft())['step'] == 'parent'
+        await app.event('Анна Алиса 9 +79991234567')
+    assert (await app.draft())['step'] == 'message'
     assert 'parent' not in (await app.draft())['data']
     assert len(await app.db.query("SELECT * FROM outbox WHERE kind='delete'")) == 1
     pending = (await app.db.query("SELECT update_id FROM inbox WHERE state='pending'"))[0]['update_id']
@@ -44,7 +44,7 @@ async def test_failed_transaction_never_enqueues_deletion_then_replay_dedupes(ap
     await app.dialog.process(pending)
     await app.dialog.process(pending)
     assert len(await app.db.query("SELECT * FROM outbox WHERE kind='delete'")) == 2
-    assert (await app.draft())['data']['parent'] == 'Анна'
+    assert json.loads((await app.db.query('SELECT data FROM requests'))[0]['data'])['parent'] == 'Анна'
 
 
 async def test_delete_retry_does_not_block_menu_and_survives_new_outbox(app):

@@ -40,7 +40,7 @@ async def test_real_acceptance_needs_explicit_flag_and_test_environment(app):
 
 
 async def test_stale_resume_no_silent_overwrite(app):
-    await app.event(action="menu:new")
+    await app.legacy_new()
     await app.event("Анна")
     await app.db.execute("UPDATE drafts SET updated_at='2020-01-01T00:00:00+00:00'")
     await app.event("ignored input")
@@ -52,7 +52,7 @@ async def test_stale_resume_no_silent_overwrite(app):
 
 
 async def test_stale_after_start_and_continue(app):
-    await app.event(action="menu:new")
+    await app.legacy_new()
     await app.event("Анна")
     await app.db.execute("UPDATE drafts SET updated_at='2020-01-01T00:00:00+00:00'")
     await app.event("/start")
@@ -89,7 +89,7 @@ async def test_migration_pre_backup_keeps_existing_draft(tmp_path):
                        "INSERT INTO schema_migrations VALUES(1);INSERT INTO metadata VALUES('kept','value');")
     db = await Store(path).open()
     assert await db.query("SELECT value FROM metadata WHERE key='kept'") == [{"value": "value"}]
-    assert len(await db.query("SELECT * FROM schema_migrations")) == 5
+    assert len(await db.query("SELECT * FROM schema_migrations")) == 6
     assert (tmp_path / "before-migration-2.sqlite3").exists()
     with sqlite3.connect(tmp_path / "before-migration-2.sqlite3") as c:
         assert c.execute("SELECT version FROM schema_migrations").fetchall() == [(1,)]
